@@ -131,7 +131,6 @@ DECL_ATOM(atm);
 // structured types
 DECL_ATOM(array);
 DECL_ATOM(struct);
-DECL_ATOM(dict_ent);
 // array options
 DECL_ATOM(rowmajor);
 DECL_ATOM(size);
@@ -172,7 +171,6 @@ static const char* sht_type_name(share_type_t* type)
     case SHT_COMPLEX128: return "complex128_t";
     case SHT_ARRAY: return "array";
     case SHT_STRUCT: return "struct";
-    case SHT_DICT_ENT: return "dict_ent";
     case SHT_ATM: return "atm";
     default: return "unknown";
     }
@@ -343,12 +341,6 @@ static size_t sht_sizeof(share_type_t* tptr)
 	size = sp->e_size;
 	break;
     }
-    case SHT_DICT_ENT: {
-	sht_dict_ent_t* sp = (sht_dict_ent_t*) tptr;
-	size += sht_sizeof(sp->spec);              // key size
-	size += sht_sizeof(sp->spec+sp->t_offset); // value size
-	break;
-    }
     case SHT_UINT8:   size = 1; break;
     case SHT_UINT16:  size = 2; break;
     case SHT_UINT32:  size = 4; break;
@@ -445,15 +437,6 @@ static ERL_NIF_TERM sht_typeof(ErlNifEnv* env, share_type_t* tptr)
 	}
 	return enif_make_tuple2(env, ATOM(struct), list);
     }
-    case SHT_DICT_ENT: {
-	sht_dict_ent_t* sp = (sht_dict_ent_t*) tptr;
-	ERL_NIF_TERM key, value;
-	if ((key = sht_typeof(env, sp->spec)) == 0)
-	    return 0;
-	if ((value = sht_typeof(env, sp->spec+sp->t_offset)) == 0)
-	    return 0;
-	return enif_make_tuple3(env, ATOM(dict_ent), key, value);
-    }
     case SHT_UINT8:   return ATOM(uint8_t);
     case SHT_UINT16:  return ATOM(uint16_t);
     case SHT_UINT32:  return ATOM(uint32_t);
@@ -486,10 +469,6 @@ static size_t sht_align(share_type_t* tptr)
 	sht_struct_t* sp = (sht_struct_t*) tptr;
 	return sp->alignment;
     }
-    case SHT_DICT_ENT: {
-	sht_dict_ent_t* sp = (sht_dict_ent_t*) tptr;
-	return sp->alignment;
-    }
     case SHT_UINT8:   return 1;
     case SHT_UINT16:  return 2;
     case SHT_UINT32:  return 4;
@@ -503,8 +482,8 @@ static size_t sht_align(share_type_t* tptr)
     case SHT_FLOAT32: return 4;
     case SHT_FLOAT64: return 8;
     case SHT_FLOAT128: return 16;
-    case SHT_COMPLEX64:  return 8;
-    case SHT_COMPLEX128: return 16;
+    case SHT_COMPLEX64:  return 4;
+    case SHT_COMPLEX128: return 8;
     case SHT_ATM: return sizeof(share_type_t); // word_t?
     default: return 0;
     }
@@ -531,14 +510,6 @@ static size_t sht_sizeof_spec(share_type_t* tptr)
 	    size += sizeof(sht_field_t)/sizeof(share_type_t);
 	    size += sht_sizeof_spec(fp->spec + fp->t_offset);
 	}
-	return size;
-    }
-    case SHT_DICT_ENT: {
-	sht_dict_ent_t* sp = (sht_dict_ent_t*) tptr;
-	size_t size = sizeof(sht_dict_ent_t)/sizeof(share_type_t);
-
-	size += sht_sizeof_spec(sp->spec);
-	size += sht_sizeof_spec(sp->spec + sp->t_offset);
 	return size;
     }
     default:
@@ -569,7 +540,7 @@ static ERL_NIF_TERM make_float128(ErlNifEnv* env, void* ptr)
 
 static ERL_NIF_TERM make_complex64(ErlNifEnv* env, void* ptr)
 {
-    complex z = *((complex*) ptr);
+    float complex z = *((float complex*) ptr);
     return enif_make_list_cell(env,
 			       enif_make_double(env, creal(z)),
 			       enif_make_double(env, cimag(z)));
@@ -598,13 +569,6 @@ static ERL_NIF_TERM make_value(ErlNifEnv* env, share_type_t* type,
 			       void* ptr)
 {
     switch(*type) {
-    case SHT_DICT_ENT: {
-	sht_dict_ent_t* sp = (sht_dict_ent_t*) type;
-	ERL_NIF_TERM key, value;
-	key = make_value(env, sp->spec, ptr);
-	value = make_value(env, sp->spec+sp->t_offset, ptr+sp->e_offset);
-	return enif_make_tuple2(env, key, value);
-    }
     case SHT_ATM: {
 	ERL_NIF_TERM name = *((ERL_NIF_TERM*) ptr);
 	if (!enif_is_atom(env, name))
@@ -658,11 +622,9 @@ static ERL_NIF_TERM make_value(ErlNifEnv* env, share_type_t* type,
 }
 
 // type() =
-//   uint() | int() | flt() | dict()
+//   uint() | int() | flt() | complex() | atm() |
 //   {array, array_opts(), type()}
 //   {struct, [{Name::atom(), type()}]}
-// dict() =
-//   {array, array_opts(), {dict_ent, type(), type()}}
 //
 //  array_opts() = size_t() | [size_t()] | [array_opt()]
 //  array_opt() = {size, size_t()|[size_t()]} |
@@ -1017,30 +979,6 @@ static int build_array_type(ErlNifEnv* env,
     return 1;
 }
 
-static int build_dict_ent(ErlNifEnv* env,
-			  ERL_NIF_TERM key, ERL_NIF_TERM value,
-			  bool_t is_array,
-			  dyn_build_t* dp)
-{
-    sht_dict_ent_t* sp;
-    int cur;
-	    
-    if (!is_array)
-	return 0;
-    if (!(sp = dyn_build_struct(dp, sizeof(sht_dict_ent_t))))
-	return 0;
-    sp->type = SHT_DICT_ENT;
-    cur = dp->cur;
-    if (!build_type(env, key, false, dp))
-	return 0;
-    sp->t_offset = dp->cur - cur;
-    sp->e_offset = sht_sizeof(&dp->base[cur]);
-    if (!build_type(env, value, false, dp))
-	return 0;
-    sp->alignment = sizeof(uintptr_t);
-    return 1;
-}
-
 static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, bool_t is_array,
 		      dyn_build_t* dp)
 {
@@ -1062,17 +1000,14 @@ static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, bool_t is_array,
 	else if ((arity == 2) && (elem[0] == ATOM(struct))) {
 	    return build_struct_type(env, elem[1], is_array, dp);
 	}
-	else if ((arity == 3) && (elem[0] == ATOM(dict_ent))) {
-	    return build_dict_ent(env, elem[1], elem[2], is_array, dp);
-	}
 	else
 	    return 0;
     }
     return 1;
 }
 
-// [1...] array index 1 OR dict key=1
-// [x...] field name x  OR dict key=x
+// [1...] array index 1
+// [x...] field name x
 //
 // FIXME: allow simple index like 1, x for simple elements
 //
@@ -1092,84 +1027,6 @@ static share_array_t* share_array_resize(share_array_t* obj, size_t new_size)
     obj->size = new_size;    
     return obj;
 }
-
-// return the ith dict element
-static int get_dict_ent_by_index(ErlNifEnv* env, unsigned int index,
-				 share_type_t* tptr, share_type_t** type_ret,
-				 uint8_t* ptr, uint8_t** ptr_ret)
-{
-    sht_array_t* sp = (sht_array_t*) tptr;
-    sht_dict_ent_t* ep = (sht_dict_ent_t*) sht_array_elem_type(sp);
-    size_t elem_size;
-
-    if (index >= sp->size)
-	return 0;
-
-    elem_size = sht_sizeof((share_type_t*) ep); // size of dict_ent
-    ptr += index*elem_size;
-    tptr = (share_type_t*) ep;
-
-    *type_ret = tptr;
-    *ptr_ret = ptr;
-    return 1;    
-}
-
-static int get_dict_val_by_atom(ErlNifEnv* env, ERL_NIF_TERM key,
-				 share_type_t* tptr, share_type_t** type_ret,
-				 uint8_t* ptr, uint8_t** ptr_ret)
-{
-    sht_array_t* sp = (sht_array_t*) tptr;
-    sht_dict_ent_t* ep = (sht_dict_ent_t*) sht_array_elem_type(sp);
-    size_t elem_size;
-    int i;
-
-    if (!sht_is_atom(ep->spec[0]))  // must be atom dict
-	return 0;
-    elem_size = sht_sizeof(sht_array_elem_type(sp)); // size of dict_ent
-    
-    for (i = 0; i < (int)sp->size; i++) {
-	// FIXME: do not? store atom in data?
-	if (*((share_type_t*) ptr) == key) {
-	    ptr += ep->e_offset;          // skip to value
-	    tptr = ep->spec+ep->t_offset; // and value spec
-	    break;
-	}
-	ptr += elem_size;  // next dict entry
-    }
-    *type_ret = tptr;
-    *ptr_ret = ptr;
-    return 1;
-}
-
-
-static int get_dict_val_by_int(ErlNifEnv* env, unsigned int index,
-			       share_type_t* tptr, share_type_t** type_ret,
-				 uint8_t* ptr, uint8_t** ptr_ret)
-{
-    sht_array_t* sp = (sht_array_t*) tptr;
-    sht_dict_ent_t* ep = (sht_dict_ent_t*) sht_array_elem_type(sp);
-    size_t elem_size;
-    int i;
-
-    if (!sht_is_integer(ep->spec[0]))
-	return 0;
-    elem_size = sht_sizeof(sht_array_elem_type(sp)); // size of dict_ent
-    
-    for (i = 0; i < (int)sp->size; i++) {
-	uint64_t key;
-	if (share_get_uint64(ep->spec, ptr, &key) &&
-	    (key == (uint64_t) index)) {
-	    ptr += ep->e_offset;            // skip to value
-	    tptr = ep->spec + ep->t_offset; // and value spec
-	    break;
-	}
-	ptr += elem_size;  // next dict entry
-    }
-    *type_ret = tptr;
-    *ptr_ret = ptr;
-    return 1;    
-}
-
 
 static int get_array_ent_by_index(ErlNifEnv* env, unsigned flags,
 				  unsigned int index,
@@ -1224,6 +1081,23 @@ static int get_struct_field_by_atom(ErlNifEnv* env, ERL_NIF_TERM key,
     return 1;
 }
 
+
+// FIXME: hash and precompute key offsets and store in sht_struct
+static int get_struct_field_by_index(ErlNifEnv* env, unsigned int index,
+				     share_type_t* tptr,share_type_t** type_ret,
+				     uint8_t* ptr, uint8_t** ptr_ret)
+{
+    sht_struct_t* sp = (sht_struct_t*) tptr;
+    sht_field_t* fp;
+
+    if (index >= sp->n)
+	return 0;
+    fp = &sp->spec[index];
+    *type_ret = fp->spec + fp->t_offset;
+    *ptr_ret = ptr + fp->e_offset;
+    return 1;
+}
+
 //
 // retrieve entry pointer for path
 // [3]    9 for array 9 {6,7,9,9} (0-bases)
@@ -1249,27 +1123,14 @@ static int get_path(ErlNifEnv* env, ERL_NIF_TERM path,
 	unsigned int index;
 
 	if (enif_get_uint(env, hd, &index)) {  // array index or key=index
-	    if (sht_is_dict(tptr)) {
-		if (flags & PATH_FLAG_OFFSET)
-		    return 0;
-		if (!get_dict_val_by_int(env, index, tptr, &tptr, ptr, &ptr))
-		    return 0;
-	    }
-	    else if (sht_is_array(tptr)) {
+	    if (sht_is_array(tptr)) {
 		if (!get_array_ent_by_index(env, flags,
 					    index, tptr, &tptr, ptr, &ptr))
 		    return 0;
-	    }	    
-	    else if (sht_is_dict_ent(tptr)) {
-		sht_dict_ent_t* ep = (sht_dict_ent_t*) tptr;
-		// path like [{1}, 0] or [{1}, 1]
-		if (index == 0) // key
-		    tptr = ep->spec;
-		else if (index == 1) { // value
-		    tptr += ep->t_offset;
-		    ptr += ep->e_offset;
-		}
-		else
+	    }
+	    else if (sht_is_struct(tptr)) {
+		if (!get_struct_field_by_index(env,
+					       index,tptr,&tptr,ptr,&ptr))
 		    return 0;
 	    }
 	    else
@@ -1280,63 +1141,8 @@ static int get_path(ErlNifEnv* env, ERL_NIF_TERM path,
 		if (!get_struct_field_by_atom(env,hd,tptr,&tptr,ptr,&ptr))
 		    return 0;
 	    }
-	    else if (sht_is_dict(tptr)) {
-		if (flags & PATH_FLAG_OFFSET)
-		    return 0;		
-		if (!get_dict_val_by_atom(env, hd, tptr, &tptr, ptr, &ptr))
-		    return 0;
-	    }
-	    else if (sht_is_dict_ent(tptr)) {
-		sht_dict_ent_t* ep = (sht_dict_ent_t*) tptr;
-		if (sht_is_atom(ep->spec[0])) {
-		    if (hd == *((share_atom_t*) ptr)) {
-			tptr = ep->spec + ep->t_offset;
-			ptr += ep->e_offset;
-		    }
-		    else
-			return 0;
-		}
-		else
-		    return 0;
-	    }
 	    else
 		return 0;
-	}
-	else if (enif_is_tuple(env, hd)) {
-	    const ERL_NIF_TERM* elem;
-	    int arity;
-	    unsigned int subind;
-
-	    if (!enif_is_empty_list(env, tl))  // must be last element
-		return 0;
-	    enif_get_tuple(env, hd, &arity, &elem);
-	    switch(arity) {
-	    case 1: // access the dict entry it self
-		if (!enif_get_uint(env, elem[0], &index))
-		    return 0;
-		if (!get_dict_ent_by_index(env, index, tptr, &tptr, ptr, &ptr))
-		    return 0;
-		break;
-	    case 2: // access the key (subind=0) or value (subind=1)
-		if (!enif_get_uint(env, elem[0], &index))
-		    return 0;
-		if (!enif_get_uint(env, elem[1], &subind))
-		    return 0;
-		if (subind > 1) return 0;
-		if (!get_dict_ent_by_index(env, index, tptr, &tptr, ptr, &ptr))
-		    return 0;
-		else {
-		    sht_dict_ent_t* ep = (sht_dict_ent_t*) tptr;
-		    tptr = (share_type_t*) ep->spec;
-		    if (subind == 1) {
-			tptr += ep->t_offset;
-			ptr += ep->e_offset;
-		    }
-		}
-		break;
-	    default:
-		return 0;
-	    }
 	}
 	else
 	    return 0;
@@ -1503,13 +1309,14 @@ static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
 	ERL_NIF_TERM list=value, hd, tl;
 	int i = 0;
 	
-	while(enif_get_list_cell(env, list, &hd, &tl)) {
+	while(enif_get_list_cell(env, list, &hd, &tl) && (i < sp->size)) {
 	    if (!set_value(env, elem_type,
 			   ptr + i*sp->stride, hd))
 		return 0;
 	    i++;
 	    list = tl;
 	}
+	// list is allowed to be shorter than the array
 	if (!enif_is_empty_list(env, list))
 	    return 0;
 	return 1;
@@ -1519,14 +1326,15 @@ static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
 	ERL_NIF_TERM list=value, hd, tl;
 	int i = 0;
 	
-	while(enif_get_list_cell(env, list, &hd, &tl)) {
-	    sht_field_t* fp = &sp->spec[i];	    
+	while(enif_get_list_cell(env, list, &hd, &tl) && (i < sp->n)) {
+	    sht_field_t* fp = &sp->spec[i];
 	    if (!set_value(env, fp->spec + fp->t_offset,
 			   ptr + fp->e_offset, hd))
 		return 0;
 	    i++;
 	    list = tl;
 	}
+	// list is allowed to be shorter than the struct
 	if (!enif_is_empty_list(env, list))
 	    return 0;
 	return 1;	
@@ -2071,7 +1879,6 @@ static int load_atoms(ErlNifEnv* env)
     // structured types
     LOAD_ATOM(array);
     LOAD_ATOM(struct);
-    LOAD_ATOM(dict_ent);
 
     // array options
     LOAD_ATOM(rowmajor);

@@ -7,47 +7,32 @@
 
 -module(share_test).
 
--export([test/0]).
+-export([all/0]).
 -export([format_ctype/1]).
 
 -compile(export_all).
 
-
-test() ->
+all() ->
     #{type := point} = test_point(),
     _ = test_offset_array(),
     _ = test_offset_data(),
     ok = test_uint128(),
     ok = test_int128(),
     ok = test_complex(),
+    ok = test_c_interaction(),
+
+    ok = test_c_interaction({array, 8,
+			     {struct, [{a,int8_t},        %% y 0
+				       {b,int16_t},       %% y 1 pad 1 read 2
+				       {c,int32_t},       %% y 4 pad 0 read 1
+				       {d,int8_t},        %% y 9 pad 7 read 8
+				       {e,float64_t}]}}),  %% y 24
+    Type6 = {struct, [{x,{array,2,short}},
+		      {y,{array,5,char}}]},
+    10 = share:sizeof(Type6),
+    ok = test_c_interaction(Type6),
     ok.
     
-test_dict() ->    
-    Spec = {array, 4, {dict_ent, atm, double}},
-    Type = share:new_type(Spec),
-    Obj = share:new(Type),
-
-    %% write keys
-    share:setelement(Obj, [{0}], {a,3.0}),
-    share:setelement(Obj, [{1}], {b,2.0}),
-    share:setelement(Obj, [{2}], {c,1.0}),
-    share:setelement(Obj, [{3}], {d,0.0}),
-
-%%    setelement(Obj, [{0,1}], 3.0),
-%%    setelement(Obj, [{1,1}], 2.0),
-%%    setelement(Obj, [{2,1}], 1.0),
-%%    setelement(Obj, [{3,1}], 0.0),
-
-    [
-     share:element(Obj, [{0,0}]),
-     share:element(Obj, [{0,1}]),
-     share:element(Obj, [{0}])
-    ].
-     
-     
-
-    
-
 test_point() ->
     Spec = {struct, [{x,float},{y,float}]},
     T = share:new_type(Spec),
@@ -137,16 +122,35 @@ test_int128() ->
     ok.
 
 test_complex() ->
-    T1 = share:new_type(complex),
+    T1 = share:new_type(complex64_t),
     Obj1 = share:new(T1),
     V = [1.0|2.0],
     share:setelement(Obj1, [], V),
     V = share:element(Obj1, []),
 
-    T2 = share:new_type(complex),
+    T2 = share:new_type(complex128_t),
     Obj2 = share:new(T2),
     share:setelement(Obj2, [], V),
     V = share:element(Obj2, []),
+    ok.
+
+test_c_interaction() ->
+    Types0 = [int8_t, int16_t, int32_t, int64_t,
+	      uint8_t, uint16_t, uint32_t, uint64_t,
+	      float32_t, float64_t, complex64_t, complex128_t],
+    Types1 = [char, short, int, long, uchar, ushort, uint, ulong,
+	      size_t, ssize_t, intptr_t, uintptr_t,
+	      float, double,
+	      complex],
+
+    lists:foreach(fun(T) -> ok = test_c_interaction(T) end, Types0),
+    lists:foreach(fun(T) -> ok = test_c_interaction(T) end, Types1),
+    lists:foreach(fun(T) -> ok = test_c_interaction({array, 3, T}) end, Types0),
+    lists:foreach(fun(T) -> ok = test_c_interaction({array, 8, T}) end, Types0),
+    lists:foreach(fun(T) -> ok = test_c_interaction(
+				   {struct,[{f1,int8_t},{f2,T}]}) end, Types0),
+    lists:foreach(fun(T) -> ok = test_c_interaction(
+				   {struct,[{f1,T},{f2,int8_t}]}) end, Types0),
     ok.
 
 %%
@@ -188,12 +192,33 @@ test_c_interaction(Type) ->
     os:cmd([ExecName," > ", DatName]),
     {ok,Bin} = file:read_file(DatName),
     Type1 = share:typeof(Type),
-    Decode = share_debug:decode_obj(Type1, Bin),
-    #{ compile_result => CompileResult,
-       gen_data => Data,
-       type_result => Type1, 
-       file_data => Bin,
-       decode_result => Decode }.
+    case share_debug:decode_obj(Type1, Bin) of
+	{Data1, Rest, Yn} ->
+	    case equal_data(Data, Data1) of
+		true -> ok;
+		false ->
+		    #{ compile_result => CompileResult,
+		       gen_data => Data,
+		       type_result => Type1, 
+		       file_data => Bin,
+		       rest_data => Rest,
+		       y_result => Yn,
+		       decode_result => Data1 }
+	    end
+    end.
+
+-define(EPS, 1.0e-6).
+
+equal_data(X, X) -> true;   
+equal_data([X|Xs],[Y|Ys]) ->
+    case equal_data(X,Y) of
+	true -> equal_data(Xs,Ys);
+	false -> false
+    end;
+equal_data(X,Y) when is_integer(X), is_integer(Y) -> X =:= Y;
+equal_data(X,Y) when is_float(X), is_float(Y) -> 
+    abs(X-Y) < ?EPS;
+equal_data(_,_) -> false.
 
 
 format_data({array, SizeOpt, Type}, Data) ->
@@ -331,13 +356,9 @@ format_ctype(Type) ->
 	{array,_SizeOpt,Te} -> format_ctype(Te);
 	{struct,Fs} ->
 	    ["struct { ", 
-	     [[format_ctype(T)," ",atom_to_list(N),";"] || 
-		 {N,T} <- Fs], " }"];
-	{dict_ent,K,V} ->
-	    ["struct { ",
-	     format_ctype(K)," key; ",
-	     format_ctype(V)," value; ",
-	     " }"]
+	     [[format_ctype(T)," ",atom_to_list(N),
+	       format_ctype_sizes(T),";"] || 
+		 {N,T} <- Fs], " }"]
     end.
 
 
@@ -348,5 +369,4 @@ format_ctype_sizes({array,SizeOpt,_BaseType}) ->
 	{Sizes,_Opts} ->
 	    [["[",integer_to_list(Size),"]"] || Size <- Sizes]
     end;
-format_ctype_sizes({struct,_Fs}) -> "";
-format_ctype_sizes({dict_ent,_K,_V}) -> "".
+format_ctype_sizes({struct,_Fs}) -> "".

@@ -43,7 +43,6 @@
 -define(SHT_ATM,        16#0100).   %% ERL_NIF_TERM (atom)
 -define(SHT_ARRAY,      16#1000).   %% share_array_t
 -define(SHT_STRUCT,     16#2000).   %% share_struct_t
--define(SHT_DICT_ENT,   16#3000).   %% share_dictent_t
 
 %% native wordsize in bits
 wordsize() ->
@@ -54,30 +53,29 @@ decode_type(T) when is_reference(T) ->
     {_Size, TBin} = share:info(T),
     decode_type(TBin);
 decode_type(TBin) when is_binary(TBin) ->
-    WordSize = share:wordsize(),
+    WordSize = wordsize(),
     Words = [X || <<X:WordSize/native>> <= TBin],
     io:format("Words = ~p\n", [Words]),
     {Type,[]} = decode_type_(Words),
     Type.
 
-decode_type_([?SHT_ARRAY,S,_TSize,_ESize,_TOffs,Align,RowMajor|Spec]) ->
-    io:format("array S=~p TSize=~p,ESize=~p,TOffs=~p,Align=~p,RowMajor=~p\n", 
-	      [S,_TSize,_ESize,_TOffs,Align,RowMajor]),
-    {Size, Stride, Spec1} = decode_array_shape(S, Spec),
+decode_type_([?SHT_ARRAY,S,_TSize,_ESize,RowMajor,
+	      Size,Stride,Align|Spec]) ->
+    io:format("array S=~p TSize=~p,E=~p,RowMajor=~p"
+	      ",Size=~p,Stride=~p,Align=~p\n",
+	      [S,_TSize,_ESize,RowMajor,Size,Stride,Align]),
+    {Size1, Stride1, Align1, Spec1} = 
+	decode_array_shape(S-1,[Size],[Stride],[Align],Spec),
     {ElemType,Spec2} = decode_type_(Spec1),
-    {{array,[{size,Size},
-	     {stride,Stride},
-	     {alignment,Align},
+    {{array,[{size,Size1},
+	     {stride,Stride1},
+	     {alignment,Align1},
 	     {rowmajor, (RowMajor > 0)}
 	    ],ElemType},Spec2};
-decode_type_([?SHT_STRUCT,N,_TSize,_ESize|Spec]) ->
-    io:format("struct N=~p TSize=~p, ESize=~p\n", [N,_TSize,_ESize]),
+decode_type_([?SHT_STRUCT,N,_TSize,_ESize,_Align|Spec]) ->
+    io:format("struct N=~p T=~p, E=~p, A=~p\n", [N,_TSize,_ESize,_Align]),
     {Fields,Spec1} = decode_fields_(N, Spec, 0, []),
     {{struct,Fields}, Spec1};
-decode_type_([?SHT_DICT_ENT,_TOffs,_EOffs|Spec]) ->
-    io:format("dict_ent TOffs=~p, EOffs=~p\n", [_TOffs,_EOffs]),
-    {[KeyType,ValType],Spec1} = decode_ntypes_(2, Spec, []),
-    {{dict_ent,KeyType, ValType},Spec1};
 decode_type_([?SHT_UINT8|Spec]) -> {uint8_t,Spec};
 decode_type_([?SHT_UINT16|Spec]) -> {uint16_t,Spec};
 decode_type_([?SHT_UINT32|Spec]) -> {uint32_t,Spec};
@@ -94,19 +92,16 @@ decode_type_([?SHT_COMPLEX64|Spec]) -> {complex64_t,Spec};
 decode_type_([?SHT_COMPLEX128|Spec]) -> {complex128_t,Spec};
 decode_type_([?SHT_ATM|Spec]) -> {atm,Spec}.
 
-decode_array_shape(Dim,Spec) ->
-    decode_array_shape(Dim,[],[],Spec).
+%% decode_array_shape(Dim,Spec) ->
+%%    decode_array_shape(Dim,[],[],Spec).
 
-decode_array_shape(0,Size,Stride,Spec) -> 
-    {lists:reverse(Size),lists:reverse(Stride),Spec};
-decode_array_shape(Dim,Size,Stride,[Sz,St|Spec]) ->
-    decode_array_shape(Dim-1,[Sz|Size],[St|Stride],Spec).
-
-decode_ntypes_(0, Spec, Acc) ->
-    {lists:reverse(Acc), Spec};
-decode_ntypes_(I, Spec, Acc) ->
-    {Type,Spec1} = decode_type_(Spec),
-    decode_ntypes_(I-1, Spec1, [Type|Acc]).
+decode_array_shape(0,Size,Stride,Align,Spec) -> 
+    {lists:reverse(Size),lists:reverse(Stride),
+     lists:reverse(Align), Spec};
+decode_array_shape(Dim,Size,Stride,Align,
+		   [?SHT_ARRAY,_,_TSize,_ESize,_RowMajor,
+		    Sz,St,Al|Spec]) ->
+    decode_array_shape(Dim-1,[Sz|Size],[St|Stride],[Al|Align],Spec).
 
 %% first pass unpack the fields, decode name
 decode_fields_(0, Spec, Offs, Acc) ->
@@ -174,29 +169,22 @@ decode_obj_({array,0,Type}, Bin, Y) ->
 decode_obj_({array,ArrayOpts,Type}, Bin, Y) ->
     {Sizes,_Opts} = share_test:get_sizes_opt(ArrayOpts),
     decode_array_(Sizes, Type, Bin, Y);
-decode_obj_(Type={dict_ent,KeyType,ValueType}, Bin, Y1) ->
-    io:format("dict_ent begin = ~p\n", [Y1]),
-    {Pad1, Bin1} = align_obj(Type, Bin, Y1), %% align each entry
-    io:format("dict_ent pad1 = ~p\n", [Pad1]),
-    {Key, Bin2, Y2} = decode_obj_(KeyType, Bin1, Y1+Pad1),
-    {Pad2, Bin3} = align_obj(ValueType, Bin2, Y2),
-    io:format("dict_ent pad2 = ~p\n", [Pad2]),
-    {Value, Bin4, Y3} = decode_obj_(ValueType, Bin3, Y2+Pad2),
-    {{Key,Value},Bin4,Y3};
 decode_obj_(Type={struct,Fields}, Bin, Y) ->
     Align = share:alignment(Type),
     {Pad, Bin1} = align_data(Align, Bin, Y),
     decode_objfields_(Fields, Bin1, Y+Pad, []).
 
-decode_objfields_([{Name,Type}|Fields], Bin, Y, Acc) ->
+decode_objfields_([{_Name,Type}|Fields], Bin, Y, Acc) ->
     {Pad, Bin1} = align_obj(Type, Bin, Y),  %% natural alignment
     Y1 = Y+Pad,
     {Value,Bin2,Y2} = decode_obj_(Type, Bin1, Y1),
-    <<ValueBin:(Y2-Y1)/binary, _/binary>> = Bin1,
-    io:format("field ~p = ~p (~p)\n", [Name,Value,ValueBin]),
-    decode_objfields_(Fields, Bin2, Y2, [{Name,Value}|Acc]);
+    %% <<ValueBin:(Y2-Y1)/binary, _/binary>> = Bin1,
+    %%io:format("field ~p = ~p (~p)\n", [Name,Value,ValueBin]),
+    %%decode_objfields_(Fields, Bin2, Y2, [{Name,Value}|Acc]);
+    decode_objfields_(Fields, Bin2, Y2, [Value|Acc]);
 decode_objfields_([], Bin, Y, Acc) ->
-    {{struct,lists:reverse(Acc)}, Bin, Y}.
+    %% {{struct,lists:reverse(Acc)}, Bin, Y}.
+    {lists:reverse(Acc), Bin, Y}.
 
 decode_array_([Size], Type, Bin, Y) ->
     decode_nobj_(Size, Type, Bin, Y, []);

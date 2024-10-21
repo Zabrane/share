@@ -65,10 +65,6 @@ And Arrays for vector over primitive types or structs
 
     {array, Size:size(), ElementType::type()}
 
-And Dictionaries (just because)
-
-    {array, Size::size(), {dict_ent, KeyType::type(), ValueType::type()}}
-
 Where size may be unsigned() | [unsigned()]. For more control then
 [{size, size()} | {stride, stride()} | {alignment, align()} ..] is used
 instead of only size.

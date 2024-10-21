@@ -51,7 +51,6 @@ typedef enum
 #define SHT_ATM        0x0100   // ERL_NIF_TERM (atom)
 #define SHT_ARRAY      0x1000   // share_array_t
 #define SHT_STRUCT     0x2000   // share_struct_t
-#define SHT_DICT_ENT   0x3000   // share_dictent_t
 
 #define SHT_CHAR SHT_INT8
 #define SHT_UCHAR SHT_UINT8
@@ -132,15 +131,6 @@ typedef struct
 
 typedef struct
 {
-    share_type_t type;      // SHT_DICT_ENT
-    share_size_t t_offset;  // offset (in words) to value spec
-    share_size_t e_offset;  // offset (in bytes) to value (from start of struct)
-    share_type_t alignment; // alignment of elements
-    share_type_t spec[];    // key-value element spec
-} sht_dict_ent_t;
-
-typedef struct
-{
     share_atom_t name;      // atom field name
     share_size_t t_offset;  // offset (in words) element type
     share_size_t e_offset;  // offset (in bytes) element data
@@ -185,8 +175,6 @@ typedef struct
 
 #define sht_is_array(tp)   (*((share_type_t*) (tp)) == SHT_ARRAY)
 #define sht_is_struct(tp)  (*((share_type_t*) (tp)) == SHT_STRUCT)
-#define sht_is_dict_ent(tp)  (*((share_type_t*) (tp)) == SHT_DICT_ENT)
-#define sht_is_dict(tp) (sht_is_array((tp)) && sht_is_dict_ent(sht_array_elem_type(((sht_array_t*)(tp)))))
 
 typedef struct
 {
