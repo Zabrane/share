@@ -8,41 +8,41 @@
 
 -module(share_debug).
 
-
 -export([decode_type/1]).
--export([decode_obj/1, decode_obj/2]).
+-export([decode_obj/1, decode_obj/2, decode_obj/3]).
 -export([debug_type/2, debug_object/2]).
 
+-define(SHT_UNSIGNED,   16#00001).
+-define(SHT_SIGNED,     16#00003).
+-define(SHT_FLT,        16#00004).
+-define(SHT_CMPLX,      16#00005).
+-define(SHT_ATM,        16#00008).
+-define(SHT_ARRAY,      16#00009).   %% share_array_t
+-define(SHT_STRUCT,     16#0000A).   %% share_struct_t
+-define(SHT_UNION,      16#0000B).   %% share_union_t
 
--define(SHT_UNSIGNED,   16#0000).  %% 0000 xxxx    
--define(SHT_SIGNED,     16#0010).  %% 0010 xxxx
--define(SHT_INTEGER,    16#0020).  %% 0010 xxxx
--define(SHT_FLT,        16#0040).  %% 0100 xxxx
--define(SHT_CMPL,       16#0080).  %% 1000 xxxx    
--define(SHT_SIZE_8,     16#0003).  %% tttt 0003  %% 2^3
--define(SHT_SIZE_16,    16#0004).  %% tttt 0004  %% 2^4
--define(SHT_SIZE_32,    16#0005).  %% tttt 0005  %% 2^5
--define(SHT_SIZE_64,    16#0006).  %% tttt 0006  %% 2^6
--define(SHT_SIZE_128,   16#0007).  %% tttt 0007  %% 2^7
+-define(SHT_SIZE_MASK,  16#00FF0).
+-define(SHT_FIELD_MASK, 16#FF000).
+-define(SHT_SIZE_8,     16#00080).
+-define(SHT_SIZE_16,    16#00100).
+-define(SHT_SIZE_32,    16#00200).
+-define(SHT_SIZE_64,    16#00400).
+-define(SHT_SIZE_128,   16#00800).
 
--define(SHT_UINT8,      ?SHT_UNSIGNED+?SHT_INTEGER+?SHT_SIZE_8).
--define(SHT_UINT16,     ?SHT_UNSIGNED+?SHT_INTEGER+?SHT_SIZE_16).
--define(SHT_UINT32,     ?SHT_UNSIGNED+?SHT_INTEGER+?SHT_SIZE_32).
--define(SHT_UINT64,     ?SHT_UNSIGNED+?SHT_INTEGER+?SHT_SIZE_64).
--define(SHT_UINT128,    ?SHT_UNSIGNED+?SHT_INTEGER+?SHT_SIZE_128).
--define(SHT_INT8,       ?SHT_SIGNED+?SHT_INTEGER+?SHT_SIZE_8).
--define(SHT_INT16,      ?SHT_SIGNED+?SHT_INTEGER+?SHT_SIZE_16).
--define(SHT_INT32,      ?SHT_SIGNED+?SHT_INTEGER+?SHT_SIZE_32).
--define(SHT_INT64,      ?SHT_SIGNED+?SHT_INTEGER+?SHT_SIZE_64).
--define(SHT_INT128,     ?SHT_SIGNED+?SHT_INTEGER+?SHT_SIZE_128).
--define(SHT_FLOAT32,    ?SHT_SIGNED+?SHT_FLT+?SHT_SIZE_32).
--define(SHT_FLOAT64,    ?SHT_SIGNED+?SHT_FLT+?SHT_SIZE_64).
--define(SHT_COMPLEX64,  ?SHT_SIGNED+?SHT_CMPL+?SHT_SIZE_64).
--define(SHT_COMPLEX128, ?SHT_SIGNED+?SHT_CMPL+?SHT_SIZE_128).
-
--define(SHT_ATM,        16#0100).   %% ERL_NIF_TERM (atom)
--define(SHT_ARRAY,      16#1000).   %% share_array_t
--define(SHT_STRUCT,     16#2000).   %% share_struct_t
+-define(SHT_UINT8,      (?SHT_UNSIGNED+?SHT_SIZE_8)).
+-define(SHT_UINT16,     (?SHT_UNSIGNED+?SHT_SIZE_16)).
+-define(SHT_UINT32,     (?SHT_UNSIGNED+?SHT_SIZE_32)).
+-define(SHT_UINT64,     (?SHT_UNSIGNED+?SHT_SIZE_64)).
+-define(SHT_UINT128,    (?SHT_UNSIGNED+?SHT_SIZE_128)).
+-define(SHT_INT8,       (?SHT_SIGNED+?SHT_SIZE_8)).
+-define(SHT_INT16,      (?SHT_SIGNED+?SHT_SIZE_16)).
+-define(SHT_INT32,      (?SHT_SIGNED+?SHT_SIZE_32)).
+-define(SHT_INT64,      (?SHT_SIGNED+?SHT_SIZE_64)).
+-define(SHT_INT128,     (?SHT_SIGNED+?SHT_SIZE_128)).
+-define(SHT_FLOAT32,    (?SHT_FLT+?SHT_SIZE_32)).
+-define(SHT_FLOAT64,    (?SHT_FLT+?SHT_SIZE_64)).
+-define(SHT_COMPLEX64,  (?SHT_CMPLX+?SHT_SIZE_64)).
+-define(SHT_COMPLEX128, (?SHT_CMPLX+?SHT_SIZE_128)).
 
 %% native wordsize in bits
 wordsize() ->
@@ -76,6 +76,10 @@ decode_type_([?SHT_STRUCT,N,_TSize,_ESize,_Align|Spec]) ->
     io:format("struct N=~p T=~p, E=~p, A=~p\n", [N,_TSize,_ESize,_Align]),
     {Fields,Spec1} = decode_fields_(N, Spec, 0, []),
     {{struct,Fields}, Spec1};
+decode_type_([?SHT_UNION,N,_TSize,_ESize,_Align|Spec]) ->
+    io:format("union N=~p T=~p, E=~p, A=~p\n", [N,_TSize,_ESize,_Align]),
+    {Fields,Spec1} = decode_fields_(N, Spec, 0, []),
+    {{union,Fields}, Spec1};
 decode_type_([?SHT_UINT8|Spec]) -> {uint8_t,Spec};
 decode_type_([?SHT_UINT16|Spec]) -> {uint16_t,Spec};
 decode_type_([?SHT_UINT32|Spec]) -> {uint32_t,Spec};
@@ -124,84 +128,177 @@ decode_obj(ObjRef) when is_reference(ObjRef) ->
     {TypeRef,Bin} = share:info(ObjRef),
     {_Size,TBin} = share:info(TypeRef),
     Type = decode_type(TBin),
-    decode_obj(Type, Bin).
+    E = erlang:system_info(endian),
+    decode_obj_(Type, E, Bin, 0).
 
-decode_obj(Type, Bin) ->
-    decode_obj_(Type, Bin, 0).
-    %%{Obj, <<>>, _Yn} = decode_obj_(Type, Bin, 0),
-    %%Obj.
+decode_obj(Type,Bin) ->
+    E = erlang:system_info(endian),
+    decode_obj_(share:typeof(Type),E,Bin,0).
 
-%% note that the atom type names are the internal version
-%% in input more type names are allowed
-%% int/long/size_t etc are mapped to native corresponding internal types
-decode_obj_(uint8_t, <<X:8/native,Bin/binary>>, Y) -> {X, Bin, Y+1};
-decode_obj_(uint16_t, <<X:16/native,Bin/binary>>, Y) -> {X, Bin, Y+2};
-decode_obj_(uint32_t, <<X:32/native,Bin/binary>>, Y) -> {X, Bin, Y+4};
-decode_obj_(uint64_t, <<X:64/native,Bin/binary>>, Y) -> {X, Bin, Y+8};
-decode_obj_(uint128_t, <<X:128/native,Bin/binary>>, Y) -> {X, Bin, Y+16};
-decode_obj_(int8_t, <<X:8/signed-native,Bin/binary>>, Y) -> {X, Bin, Y+1};
-decode_obj_(int16_t, <<X:16/signed-native,Bin/binary>>, Y) -> {X, Bin, Y+2};
-decode_obj_(int32_t, <<X:32/signed-native,Bin/binary>>, Y) -> {X, Bin, Y+4};
-decode_obj_(int64_t, <<X:64/signed-native,Bin/binary>>, Y) -> {X, Bin, Y+8};
-decode_obj_(int128_t, <<X:128/signed-native,Bin/binary>>, Y) -> {X, Bin, Y+16};
-decode_obj_(float32_t, <<X:32/float-native,Bin/binary>>, Y) -> {X, Bin, Y+4};
-decode_obj_(float64_t, <<X:64/float-native,Bin/binary>>, Y) -> {X, Bin, Y+8};
-decode_obj_(complex64_t, <<R:32/float-native,I:32/float-native,Bin/binary>>,Y) ->
-    {[R|I], Bin, Y+4+4};
-decode_obj_(complex128_t, <<R:64/float-native,I:64/float-native,Bin/binary>>,Y)->
-    {[R|I], Bin, Y+8+8};
-decode_obj_(atm, Bin, Y) ->
-    WSz = wordsize(),
-    case Bin of
-	<<Atm:WSz/native,Bin1/binary>> ->
-	    if Atm =:= 0 ->
-		    {undefined, Bin1, Y+WSz};
-	       true -> %% info(Atm) looks up the real atom!
-		    {share:info(Atm), Bin1, Y+WSz}
+decode_obj(Type,E,Bin) ->
+    Type1 = share:typeof(Type),
+    decode_obj_(Type1,E,Bin,0).
+
+decode_obj_(Type, E, Bin, Y) when is_atom(Type) ->
+    case {Type,E,Bin} of 
+	%% BIG ENDIAN
+	{uint8_t,big,<<_:Y/unit:8,X:8/big,_/binary>>} ->
+	    {X, Y+1};
+	{uint16_t, big, <<_:Y/unit:8,X:16/big,_/binary>>} -> 
+	    {X, Y+2};
+	{uint32_t, big, <<_:Y/unit:8,X:32/big,_/binary>>} ->
+	    {X, Y+4};
+	{uint64_t, big, <<_:Y/unit:8,X:64/big,_/binary>>} -> 
+	    {X, Y+8};
+	{uint128_t, big, <<_:Y/unit:8,X:128/big,_/binary>>} ->
+	    {X, Y+16};
+	{int8_t, big, <<_:Y/unit:8,X:8/signed-big,_/binary>>} ->
+	    {X, Y+1};
+	{int16_t, big, <<_:Y/unit:8,X:16/signed-big,_/binary>>} -> 
+	    {X, Y+2};
+	{int32_t, big, <<_:Y/unit:8,X:32/signed-big,_/binary>>} -> 
+	    {X, Y+4};
+	{int64_t, big, <<_:Y/unit:8,X:64/signed-big,_/binary>>} -> 
+	    {X, Y+8};
+	{int128_t, big, <<_:Y/unit:8,X:128/signed-big,_/binary>>} -> 
+	    {X, Y+16};
+	{float32_t, big, <<_:Y/unit:8,X:32/float-big,_/binary>>} -> 
+	    {X, Y+4};
+	{float64_t, big, <<_:Y/unit:8,X:64/float-big,_/binary>>} ->
+	    {X, Y+8};
+	{complex64_t, big, <<_:Y/unit:8,R:32/float-big,I:32/float-big,_/binary>>} ->
+	    {[R|I], Y+4+4};
+	{complex128_t, big, <<_:Y/unit:8,R:64/float-big,I:64/float-big,_/binary>>}->
+	    {[R|I], Y+8+8};
+	%% LITTLE ENDIAN	
+	{uint8_t,little,<<_:Y/unit:8,X:8/little,_/binary>>} ->
+	    {X, Y+1};
+	{uint16_t, little, <<_:Y/unit:8,X:16/little,_/binary>>} -> 
+	    {X, Y+2};
+	{uint32_t, little, <<_:Y/unit:8,X:32/little,_/binary>>} ->
+	    {X, Y+4};
+	{uint64_t, little, <<_:Y/unit:8,X:64/little,_/binary>>} -> 
+	    {X, Y+8};
+	{uint128_t, little, <<_:Y/unit:8,X:128/little,_/binary>>} ->
+	    {X, Y+16};
+	{int8_t, little, <<_:Y/unit:8,X:8/signed-little,_/binary>>} -> 
+	    {X, Y+1};
+	{int16_t, little,<<_:Y/unit:8,X:16/signed-little,_/binary>>} ->
+	    {X, Y+2};
+	{int32_t, little, <<_:Y/unit:8,X:32/signed-little,_/binary>>} ->
+	    {X, Y+4};
+	{int64_t, little, <<_:Y/unit:8,X:64/signed-little,_/binary>>} -> 
+	    {X, Y+8};
+	{int128_t, little, <<_:Y/unit:8,X:128/signed-little,_/binary>>} ->
+	    {X, Y+16};
+	{float32_t, little, <<_:Y/unit:8,X:32/float-little,_/binary>>} -> 
+	    {X, Y+4};
+	{float64_t, little, <<_:Y/unit:8,X:64/float-little,_/binary>>} -> 
+	    {X, Y+8};
+	{complex64_t, little, <<_:Y/unit:8,R:32/float-little,I:32/float-little,_/binary>>} ->
+	    {[R|I], Y+4+4};
+	{complex128_t, little, <<_:Y/unit:8,R:64/float-little,I:64/float-little,_/binary>>}->
+	    {[R|I], Y+8+8};
+
+	{atm, _E, _} ->
+	    WSz = wordsize(),
+	    case Bin of
+		<<_:Y/unit:8,Atm:WSz/native,_/binary>> -> %% must be native!
+		    if Atm =:= 0 ->
+			    {undefined, Y+WSz};
+		       true -> %% info(Atm) looks up the real atom!
+			    {share:info(Atm), Y+WSz}
+		    end
 	    end
     end;
-decode_obj_({array,0,Type}, Bin, Y) ->
+decode_obj_({array,0,Type},_E,Bin,Y) ->
     WSz = wordsize(),
     case Bin of
-	<<Ptr:WSz/native,Bin1/binary>> ->
-	    {{ptr,Type,Ptr}, Bin1, Y+WSz}
+	<<_:Y/unit:8,Ptr:WSz/native,_/binary>> ->
+	    {{ptr,Type,Ptr}, Y+WSz}
     end;
-decode_obj_({array,ArrayOpts,Type}, Bin, Y) ->
+decode_obj_({array,ArrayOpts,Type},E,Bin,Y) ->
     {Sizes,_Opts} = share_test:get_sizes_opt(ArrayOpts),
-    decode_array_(Sizes, Type, Bin, Y);
-decode_obj_(Type={struct,Fields}, Bin, Y) ->
-    Align = share:alignment(Type),
-    {Pad, Bin1} = align_data(Align, Bin, Y),
-    decode_objfields_(Fields, Bin1, Y+Pad, []).
+    decode_array_(Sizes,Type,E,Bin,Y);
+decode_obj_(Type={struct,Fields},E,Bin,Y) ->
+    Align = share:alignment(Type), %% this will recalculate the alignment
+    {Pad,Bin1} = align_data(Align, Bin, Y),
+    {Fs,Z} = decode_struct_fields(Fields, E, Bin1, 0, 0, 0, []),
+    {Fs, Y+Pad+((Z+7) bsr 3)}.
 
-decode_objfields_([{_Name,Type}|Fields], Bin, Y, Acc) ->
-    {Pad, Bin1} = align_obj(Type, Bin, Y),  %% natural alignment
-    Y1 = Y+Pad,
-    {Value,Bin2,Y2} = decode_obj_(Type, Bin1, Y1),
-    %% <<ValueBin:(Y2-Y1)/binary, _/binary>> = Bin1,
-    %%io:format("field ~p = ~p (~p)\n", [Name,Value,ValueBin]),
-    %%decode_objfields_(Fields, Bin2, Y2, [{Name,Value}|Acc]);
-    decode_objfields_(Fields, Bin2, Y2, [Value|Acc]);
-decode_objfields_([], Bin, Y, Acc) ->
-    %% {{struct,lists:reverse(Acc)}, Bin, Y}.
-    {lists:reverse(Acc), Bin, Y}.
+decode_field(Type,E,Bin,Z) ->
+    <<_:Z, Bin1/binary>> = Bin,  %% get field start
+    {X, Y1} = decode_obj_(Type,E,Bin1,0),
+    {X, Z+Y1*8}.
 
-decode_array_([Size], Type, Bin, Y) ->
-    decode_nobj_(Size, Type, Bin, Y, []);
-decode_array_([Size|Sizes],Type,Bin,Y) ->
-    decode_array__(Size, Sizes, Type, Bin, Y, []).
+decode_bitfield(Type, BaseSize, FieldSize, E, Bin, Z) when
+      (Z band (BaseSize-1))+FieldSize > BaseSize ->
+    Pad = BaseSize - (Z band (BaseSize-1)),
+    decode_bitfield(Type, BaseSize, FieldSize, E, Bin, Z+Pad);
+decode_bitfield(Type, BaseSize, FieldSize, E, Bin, Z) ->
+    Z0 = Z band (BaseSize - 1),  %% bit offset
+    BaseOffs = Z band (bnot (BaseSize - 1)),
+    Offs = if E =:= little -> BaseOffs + (BaseSize - Z0 - FieldSize);
+	      true -> BaseOffs + Z0
+	   end,
+    io:format("Z=~w,Z0=~w,BaseOffs=~w,Offs=~w,BS=~w,FS=~w\n",
+	      [Z,Z0,BaseOffs,Offs,BaseSize,FieldSize]),
 
-decode_array__(0, _Sizes, _Type, Bin, Y, Acc) ->
-    {lists:reverse(Acc), Bin, Y};
-decode_array__(I, Sizes, Type, Bin, Y, Acc) ->
-    {Data, Bin1, Y1} = decode_array_(Sizes, Type, Bin, Y),
-    decode_array__(I-1, Sizes, Type, Bin1, Y1, [Data|Acc]).
+    case is_signed(Type) of
+	false ->
+	    <<_:Offs, X:FieldSize/unsigned, _/bitstring>> = Bin,
+	    io:format("unsigned ~p:~w\n", [X,FieldSize]),
+	    {X, Z+FieldSize};
+	true ->
+	    <<_:Offs, X:FieldSize/signed, _/bitstring>> = Bin,
+	    io:format("signed ~p:~w\n", [X,FieldSize]),
+	    {X, Z+FieldSize}
+    end.
 
-decode_nobj_(0, _Type, Bin, Y, Acc) ->
-    {lists:reverse(Acc), Bin, Y};
-decode_nobj_(I, Type, Bin, Y, Acc) ->
-    {Data, Bin1, Y1} = decode_obj_(Type, Bin, Y),
-    decode_nobj_(I-1, Type, Bin1, Y1, [Data|Acc]).
+decode_struct_fields([{_Name,{Type,FieldSize}}|Fields], E, Bin, Z, 
+		      Remain, PackSize, Acc) 
+  when is_integer(FieldSize), FieldSize >= 0 ->
+    if FieldSize =:= 0 ->
+	    BaseSize = share:bitsizeof(Type),
+	    Pad = BaseSize - (Z band (BaseSize-1)),
+	    decode_struct_fields(Fields, E, Bin, Z+Pad, 0, 0, Acc);
+       FieldSize =< Remain -> %% straddle fiel
+	    io:format("straddle ~p:~p\n", [Type,FieldSize]),
+	    {Value,Z1} = decode_bitfield(Type,PackSize,FieldSize,E,Bin,Z),
+	    decode_struct_fields(Fields,E,Bin,Z1,Remain-FieldSize, 
+				 PackSize,[Value|Acc]);
+       true ->
+	    BaseSize = share:bitsizeof(Type),
+	    Pad = pad(BaseSize, Z),
+	    {Value,Z1} = decode_bitfield(Type,BaseSize,FieldSize,E,Bin,Z+Pad),
+	    decode_struct_fields(Fields, E, Bin, Z1,
+				 BaseSize-FieldSize, BaseSize,
+				 [Value|Acc])
+    end;
+decode_struct_fields([{_Name,Type}|Fields],E,Bin,Z,Remain,_PackSize,Acc) ->
+    Pad = bitpad(Type, Z+Remain),
+    Z1 = Z+Remain+Pad,
+    {Value,Z2} = decode_field(Type, E, Bin, Z1),
+    decode_struct_fields(Fields, E, Bin, Z2, 0, 0, [Value|Acc]);
+decode_struct_fields([],_E,_Bin,Z,Remain,_PackSize,Acc) ->
+    {lists:reverse(Acc), Z+Remain}.
+
+decode_array_([Size],Type,E,Bin,Y) ->
+    decode_nobj_(Size,Type,E,Bin,Y,[]);
+decode_array_([Size|Sizes],Type,E,Bin,Y) ->
+    decode_array__(Size,Sizes,Type,E,Bin,Y,[]).
+
+decode_array__(0, _Sizes, _Type, _E, _Bin, Y, Acc) ->
+    {lists:reverse(Acc), Y};
+decode_array__(I, Sizes, Type, E, Bin, Y, Acc) ->
+    {Data, Y1} = decode_array_(Sizes, Type, E, Bin, Y),
+    decode_array__(I-1, Sizes, Type, E, Bin, Y1, [Data|Acc]).
+
+decode_nobj_(0,_Type,_E,_Bin,Y,Acc) ->
+    {lists:reverse(Acc),Y};
+decode_nobj_(I,Type,E,Bin,Y,Acc) ->
+    {Data,Y1} = decode_obj_(Type,E,Bin,Y),
+    decode_nobj_(I-1,Type,E,Bin,Y1,[Data|Acc]).
 
 align_obj(Type, Bin, Y) ->
     A = share:alignment(Type),
@@ -211,6 +308,34 @@ align_data(A, Bin, Y) when is_integer(A), A > 0 ->
     Pad = (A - (Y rem A)) rem A,
     <<_:Pad/binary, Bin1/binary>> = Bin,
     {Pad, Bin1}.
+
+bitpad(Type, Z) ->
+    A = share:bitalignment(Type),
+    pad(A, Z).
+
+pad(A, Z) ->
+    (A - (Z rem A)) rem A.
+
+bitalign_obj(Type, Bin, Z) ->
+    A = share:bitalignment(Type),
+    align_data(A, Bin, Z).
+
+bitalign_data(A, Bin, Z) when is_integer(A), A > 0 ->
+    Pad = (A - (Z rem A)) rem A,
+    <<_:Pad, Bin1/binary>> = Bin,
+    {Pad, Bin1}.
+
+is_signed(uint8_t) -> false;
+is_signed(uint16_t) -> false;
+is_signed(uint32_t) -> false;
+is_signed(uint64_t) -> false;
+is_signed(uint128_t) -> false;
+is_signed(int8_t) -> true;
+is_signed(int16_t) -> true;
+is_signed(int32_t) -> true;
+is_signed(int64_t) -> true;
+is_signed(int128_t) -> true;
+is_signed(_) -> false.
 
 
 debug_type(T, Spec) ->

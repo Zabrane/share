@@ -12,10 +12,17 @@
 -export([size/1, size/2, resize/2, resize/3]).
 -export([typeof/1, typeof/2, sizeof/1, sizeof/2, offsetof/2]).
 -export([alignment/1, alignment/2]).
+-export([bitsizeof/1, bitsizeof/2]).
+-export([bitalignment/1, bitalignment/2]).
+-export([bitoffsetof/2]).
+
 -nifs([info/0, info/1, new/1, new/2, new_type/1, element/2, setelement/3]).
 -nifs([size/1, size/2, resize/3]).
 -nifs([typeof/1,typeof/2,  sizeof/1, sizeof/2, offsetof/2]).
 -nifs([alignment/1, alignment/2]).
+-nifs([bitsizeof/1, bitsizeof/2]).
+-nifs([bitalignment/1, bitalignment/2]).
+-nifs([bitoffsetof/2]).
 
 -export([i/1]).
 
@@ -42,12 +49,11 @@
 -type array()  :: {array,unsigned(),typespec()}.
 -type bin()    :: {array,unsigned(),uint8}.
 -type str()    :: {array,unsigned(),int8}.
--type struct() :: {struct,[{FieldName::atm(),FieldType::typespec()}]}.
--type dict_ent() :: {dict_ent,KeyType::typespec(),ValueType::typespec()}.
--type dict()   :: {array,unsigned(),dict_ent()}.
--type typespec()  :: num()|atm()|array()|struct()|dict()|str()|bin()|typeref().
+-type struct() :: {struct,[{FieldName::atm(),FieldType::ftypespec()}]}.
+-type typespec()  :: num()|atm()|array()|struct()|str()|bin()|typeref().
+-type ftypespec() :: typespec()|{unsigned,unsigned()}|{signed,unsigned()}.
 
--type path() :: [unsigned()|atom()|{unsigned}|{unsigned,unsigned}].
+-type path() :: [unsigned()|atom()|{unsigned()}|{unsigned(),unsigned()}].
 -type type() :: typeref()|objref()|typespec().
 
 
@@ -123,9 +129,26 @@ sizeof(_Object) ->
 sizeof(_Object, _Path) ->
     ?nif_stub.
 
+%% compute memory size for a shared data type in bits
+%% argument is either term representing a type, typeref or
+%% objref
+-spec bitsizeof(Object::type()) -> unsigned().
+bitsizeof(_Object) ->
+    ?nif_stub.
+
+-spec bitsizeof(Object::type(), Path::path()) -> unsigned().
+bitsizeof(_Object, _Path) ->
+    ?nif_stub.
+
 %% compute offset to a field or an array element
 -spec offsetof(Object::type(), Path::path()) -> unsigned().
 offsetof(_Object, _Path) ->
+    ?nif_stub.
+
+%% compute bit offset to a field or an array element
+%% NOTE that bit offset is realtive to the (gcc) packing unit
+-spec bitoffsetof(Object::type(), Path::path()) -> unsigned().
+bitoffsetof(_Object, _Path) ->
     ?nif_stub.
 
 %% get the term type given typeref, objref, term (return translated)
@@ -138,10 +161,18 @@ typeof(_Object) ->
 typeof(_Object, _Path) ->
     ?nif_stub.
 
--spec alignment(_Type::type()) -> unsigned().
-alignment(_Type) ->
+-spec alignment(Object::type()) -> unsigned().
+alignment(_Object) ->
     ?nif_stub.
 
--spec alignment(_Type::type(), Path::path()) -> unsigned().
-alignment(_Type, _Path) ->
+-spec alignment(Object::type(), Path::path()) -> unsigned().
+alignment(_Object, _Path) ->
+    ?nif_stub.
+
+-spec bitalignment(Object::type()) -> unsigned().
+bitalignment(_Object) ->
+    ?nif_stub.
+
+-spec bitalignment(Object::type(), Path::path()) -> unsigned().
+bitalignment(_Object, _Path) ->
     ?nif_stub.

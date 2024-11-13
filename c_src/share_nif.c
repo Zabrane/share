@@ -11,8 +11,8 @@
 
 #include "../include/share_type.h"
 #include "share_big.h"
+#include "bitpack.h"
 
-// #define DEBUG
 // #define NIF_TRACE
 
 // Dirty optional since 2.7 and mandatory since 2.12
@@ -33,8 +33,10 @@
 
 #ifdef DEBUG
 #define DEBUGF(f,a...) enif_fprintf(stderr, f "\r\n", a)
+#define DBGF(f,a...) enif_fprintf(stderr, f, a)
 #else
 #define DEBUGF(f,a...)
+#define DBGF(f,a...)
 #endif
 #define INFOF(f,a...) enif_fprintf(stderr, f "\r\n", a)
 #define ERRORF(f,a...) enif_fprintf(stderr, f "\r\n", a)
@@ -62,9 +64,14 @@
     NIF("size",  2, share_size)			\
     NIF("alignment",  1, share_alignment)	\
     NIF("alignment",  2, share_alignment)	\
+    NIF("bitalignment",  1, share_bitalignment)	\
+    NIF("bitalignment",  2, share_bitalignment)	\
     NIF("sizeof",  1, share_sizeof)		\
     NIF("sizeof",  2, share_sizeof)		\
+    NIF("bitsizeof",  1, share_bitsizeof)	\
+    NIF("bitsizeof",  2, share_bitsizeof)	\
     NIF("offsetof",  2, share_offsetof)		\
+    NIF("bitoffsetof",  2, share_bitoffsetof)	\
     NIF("typeof",  1, share_typeof)		\
     NIF("typeof",  2, share_typeof)
 
@@ -86,6 +93,18 @@ DECL_ATOM(type);
 DECL_ATOM(element);
 DECL_ATOM(setelement);
 // sample types
+DECL_ATOM(volatile);
+DECL_ATOM(unsigned);
+DECL_ATOM(signed);
+DECL_ATOM(char);
+DECL_ATOM(short);
+DECL_ATOM(long);
+DECL_ATOM(int);
+DECL_ATOM(float);
+DECL_ATOM(double);
+DECL_ATOM(complex);
+
+// "known" unsigned typedefs
 DECL_ATOM(uint);
 DECL_ATOM(uchar);
 DECL_ATOM(ushort);
@@ -102,12 +121,7 @@ DECL_ATOM(uint16);
 DECL_ATOM(uint32);
 DECL_ATOM(uint64);
 DECL_ATOM(uint128);
-DECL_ATOM(char);
-DECL_ATOM(short);
-DECL_ATOM(long);
-DECL_ATOM(int);
-DECL_ATOM(intptr_t);
-DECL_ATOM(ssize_t);
+// "known" signed typedefs
 DECL_ATOM(int8_t);
 DECL_ATOM(int16_t);
 DECL_ATOM(int32_t);
@@ -118,19 +132,21 @@ DECL_ATOM(int16);
 DECL_ATOM(int32);
 DECL_ATOM(int64);
 DECL_ATOM(int128);
-DECL_ATOM(float);
-DECL_ATOM(double);
+DECL_ATOM(intptr_t);
+DECL_ATOM(ssize_t);
+// "known" other
 DECL_ATOM(float16_t);
 DECL_ATOM(float32_t);
 DECL_ATOM(float64_t);
 DECL_ATOM(float128_t);
-DECL_ATOM(complex);
 DECL_ATOM(complex64_t);
 DECL_ATOM(complex128_t);
+
 DECL_ATOM(atm);
 // structured types
 DECL_ATOM(array);
 DECL_ATOM(struct);
+DECL_ATOM(union);
 // array options
 DECL_ATOM(rowmajor);
 DECL_ATOM(size);
@@ -138,16 +154,18 @@ DECL_ATOM(stride);
 DECL_ATOM(alignment);
 DECL_ATOM(offset);
 
+// emapty field name (:0 or :3 ..)
+DECL_ATOM(_);
+
+
 #define PATH_FLAG_NONE    0x00
 #define PATH_FLAG_RESIZE  0x01
 #define PATH_FLAG_OFFSET  0x02
 
 #define FIXED_SIZE 1024
 
-
 ErlNifResourceType *type_r;
 ErlNifResourceType *object_r;
-// ErlNifResourceType *array_r;
 
 #ifdef DEBUG
 static const char* sht_type_name(share_type_t* type)
@@ -171,64 +189,248 @@ static const char* sht_type_name(share_type_t* type)
     case SHT_COMPLEX128: return "complex128_t";
     case SHT_ARRAY: return "array";
     case SHT_STRUCT: return "struct";
+    case SHT_UNION: return "union";	
     case SHT_ATM: return "atm";
     default: return "unknown";
     }
 }
 #endif
 
+// hash table for basic atom types
+static struct { ERL_NIF_TERM* atmp; share_type_t type; } typedef_pair[] =
+{
+    { &ATOM(ok), 0 },
+    /*
+    { &ATOM(unsigned), SHT_UINT },
+    { &ATOM(signed), SHT_INT },
+    { &ATOM(char), SHT_CHAR },
+    { &ATOM(short), SHT_SHORT },
+    { &ATOM(int), SHT_INT },
+    { &ATOM(long), SHT_LONG },
+    { &ATOM(float), SHT_FLOAT },
+    { &ATOM(double), SHT_DOUBLE },
+    { &ATOM(complex), SHT_COMPLEX64 },
+    */
+    { &ATOM(uchar), SHT_UINT8 },
+    { &ATOM(ushort), SHT_UINT16 },
+    { &ATOM(uint), SHT_UINT },
+    { &ATOM(ulong), SHT_UINT64 },
+    { &ATOM(size_t), SHT_SIZE },
+    { &ATOM(uintptr_t), SHT_UINTPTR },
+    { &ATOM(uint8_t), SHT_UINT8 },
+    { &ATOM(uint16_t), SHT_UINT16 },
+    { &ATOM(uint32_t), SHT_UINT32 },
+    { &ATOM(uint64_t), SHT_UINT64 },
+    { &ATOM(uint128_t), SHT_UINT128 },
+    { &ATOM(uint8), SHT_UINT8 },
+    { &ATOM(uint16), SHT_UINT16 },
+    { &ATOM(uint32), SHT_UINT32 },
+    { &ATOM(uint64), SHT_UINT64 },
+    { &ATOM(uint128), SHT_UINT128 },
+    { &ATOM(ssize_t), SHT_SSIZE },
+    { &ATOM(intptr_t), SHT_INTPTR },
+    { &ATOM(int8_t), SHT_INT8 },
+    { &ATOM(int16_t), SHT_INT16 },
+    { &ATOM(int32_t), SHT_INT32 },
+    { &ATOM(int64_t), SHT_INT64 },
+    { &ATOM(int128_t), SHT_INT128 },
+    { &ATOM(int8), SHT_INT8 },
+    { &ATOM(int16), SHT_INT16 },
+    { &ATOM(int32), SHT_INT32 },
+    { &ATOM(int64), SHT_INT64 },
+    { &ATOM(int128), SHT_INT128 },
+    { &ATOM(float16_t), SHT_FLOAT16 },
+    { &ATOM(float32_t), SHT_FLOAT32 },
+    { &ATOM(float64_t), SHT_FLOAT64 },
+    { &ATOM(float128_t), SHT_FLOAT128 },
+    { &ATOM(complex64_t), SHT_COMPLEX64 },
+    { &ATOM(complex128_t), SHT_COMPLEX128 },
+    { &ATOM(atm), SHT_ATM },
+    { NULL, 0 }
+};
+
+#define TYPEDEF_HASH_SIZE 119
+static int typedef_hash[TYPEDEF_HASH_SIZE];
+
+static int init_type0()
+{
+    int i;
+    int miss = 0;
+    
+    memset(typedef_hash, 0, sizeof(typedef_hash));
+    
+    for (i = 1; typedef_pair[i].atmp != NULL; i++) {
+	ERL_NIF_TERM atm = *(typedef_pair[i].atmp);
+	unsigned int h = atm % TYPEDEF_HASH_SIZE;
+	int m = 0;
+	
+	while(typedef_hash[h]) {
+	    h++;
+	    if (m++ > TYPEDEF_HASH_SIZE) {
+		DEBUGF("init_type0: hash table full %d", TYPEDEF_HASH_SIZE);
+		return 0;
+	    }
+	    miss++;
+	    if (h >= TYPEDEF_HASH_SIZE)
+		h = 0;
+	}
+	typedef_hash[h] = i;
+    }
+    DEBUGF("init_type0: %d collisions", miss);
+    return 1;
+}
+
+
 // uint() | int() | flt()
+// assume that type of arg (atom) is already checked
+
+static int build_typedef(ERL_NIF_TERM arg, share_type_t* type_ptr)
+{
+    unsigned int h = arg % TYPEDEF_HASH_SIZE;
+    while(typedef_hash[h]) {
+	int i = typedef_hash[h];
+	if (*(typedef_pair[i].atmp) == arg) {
+	    *type_ptr = typedef_pair[i].type;
+	    return 1;
+	}
+	h++;
+	if (h >= TYPEDEF_HASH_SIZE)
+	    h = 0;
+    }
+    return 0;
+}
+
+// types like:
+// [unsigned]
+// [unsigned, int]
+// [signed, char]
+// [volatile, unsigned, int]
+// int32_t
+// char
+// unsigned
+// ...
+
 static int build_type0(ErlNifEnv* env, ERL_NIF_TERM arg, share_type_t* type_ptr)
 {
-    share_type_t type;
+    int is_volatile = 0;
+    int n_double = 0;
+    int n_float = 0;
+    int n_complex = 0;
+    int n_long = 0;
+    int n_short = 0;
+    int n_char = 0;
+    int n_int = 0;
+    int n_unsigned = 0;
+    int n_signed = 0;
+    share_type_t type0 = SHT_NONE;
+    share_type_t type = SHT_NONE;
 
-    // unsigned 
-    if (arg == ATOM(uchar)) type = SHT_UCHAR;
-    else if (arg == ATOM(ushort)) type = SHT_USHORT;
-    else if (arg == ATOM(uint)) type = SHT_UINT;
-    else if (arg == ATOM(ulong)) type = SHT_ULONG;
-    else if (arg == ATOM(size_t)) type = SHT_SIZE;
-    else if (arg == ATOM(uintptr_t)) type = SHT_UINTPTR;
-    else if (arg == ATOM(uint8_t)) type = SHT_UINT8;
-    else if (arg == ATOM(uint16_t)) type = SHT_UINT16;
-    else if (arg == ATOM(uint32_t)) type = SHT_UINT32;
-    else if (arg == ATOM(uint64_t)) type = SHT_UINT64;
-    else if (arg == ATOM(uint128_t)) type = SHT_UINT128;
-    else if (arg == ATOM(uint8)) type = SHT_UINT8;
-    else if (arg == ATOM(uint16)) type = SHT_UINT16;
-    else if (arg == ATOM(uint32)) type = SHT_UINT32;
-    else if (arg == ATOM(uint64)) type = SHT_UINT64;
-    else if (arg == ATOM(uint128)) type = SHT_UINT128;    
+    if (enif_is_list(env, arg)) {
+	ERL_NIF_TERM hd, tl;
+	ERL_NIF_TERM list = arg;
+	while (enif_get_list_cell(env, list, &hd, &tl)) {
+	    if (hd == ATOM(volatile)) is_volatile = 1;
+	    else {
+		if (hd == ATOM(unsigned))    n_unsigned++;
+		else if (hd == ATOM(signed)) n_signed++;
+		else if (hd == ATOM(long))   n_long++;
+		else if (hd == ATOM(short))  n_short++;
+		else if (hd == ATOM(char))   n_char++;
+		else if (hd == ATOM(int))    n_int++;
+		else if (hd == ATOM(float))  n_float++;
+		else if (hd == ATOM(double)) n_double++;
+		else if (hd == ATOM(complex)) n_complex++;
+		else if (enif_is_atom(env, hd)) {
+		    if (!build_typedef(hd, &type))
+			return 0;
+		}
+		else
+		    return 0;	    
+	    }
+	    list = tl;
+	}
+	if (!enif_is_empty_list(env, list))
+	    return 0;
+    }
+    else if (enif_is_atom(env, arg)) {
+	if (!build_typedef(arg, &type)) {
+	    if (arg == ATOM(unsigned)) type = SHT_UINT;
+	    else if (arg == ATOM(signed)) type = SHT_INT;
+	    else if (arg == ATOM(long))  type = SHT_LONG;
+	    else if (arg == ATOM(short)) type = SHT_SHORT;
+	    else if (arg == ATOM(char))  type = SHT_CHAR;
+	    else if (arg == ATOM(int)) type = SHT_INT;
+	    else if (arg == ATOM(float))  type = SHT_FLOAT;
+	    else if (arg == ATOM(double)) type = SHT_DOUBLE;
+	    else if (arg == ATOM(complex)) type =SHT_COMPLEX;
+	    else return 0;
+	}
+    }
+    else
+	return 0;
 
-    // signed 
-    else if (arg == ATOM(char)) type = SHT_CHAR;
-    else if (arg == ATOM(short)) type = SHT_SHORT;
-    else if (arg == ATOM(int)) type = SHT_INT;
-    else if (arg == ATOM(long)) type = SHT_LONG;
-    else if (arg == ATOM(ssize_t)) type = SHT_SSIZE;
-    else if (arg == ATOM(intptr_t)) type = SHT_INTPTR;
-    else if (arg == ATOM(int8_t)) type = SHT_INT8;
-    else if (arg == ATOM(int16_t)) type = SHT_INT16;
-    else if (arg == ATOM(int32_t)) type = SHT_INT32;
-    else if (arg == ATOM(int64_t)) type = SHT_INT64;
-    else if (arg == ATOM(int128_t)) type = SHT_INT128;
-    else if (arg == ATOM(int8)) type = SHT_INT8;
-    else if (arg == ATOM(int16)) type = SHT_INT16;
-    else if (arg == ATOM(int32)) type = SHT_INT32;
-    else if (arg == ATOM(int64)) type = SHT_INT64;
-    else if (arg == ATOM(int128)) type = SHT_INT128;    
-    // float
-    else if (arg == ATOM(float)) type = SHT_FLOAT;
-    else if (arg == ATOM(double)) type = SHT_DOUBLE;    
-    else if (arg == ATOM(float32_t)) type = SHT_FLOAT32;
-    else if (arg == ATOM(float64_t)) type = SHT_FLOAT64;
-    else if (arg == ATOM(float128_t)) type = SHT_FLOAT128;
-    else if (arg == ATOM(complex)) type = SHT_COMPLEX64;
-    else if (arg == ATOM(complex64_t)) type = SHT_COMPLEX64;
-    else if (arg == ATOM(complex128_t)) type = SHT_COMPLEX128;
-    else if (arg == ATOM(atm)) type = SHT_ATM;
-    else return 0;
-    *type_ptr = type;
+    // at most one data type
+    if ((n_int + n_char + n_double + n_float) > 1)  return 0;
+    if (n_short && n_char) return 0;   // bad mix
+    if (n_long && n_char) return 0;    // bad mix
+    if (n_short && n_long) return 0;   // bad mix
+    if (n_signed && n_unsigned) return 0;  // bad mix
+    if ((n_complex+n_float+n_double) &&
+	(n_char+n_short+n_int+n_long)) return 0; // bad mix
+    if ((n_complex+n_float+n_double) &&
+	(n_signed+n_unsigned)) return 0; // bad mix
+
+    if (n_long > 2) return 0;             // too long
+    
+    if (type == SHT_NONE) {
+	if (n_unsigned) {
+	    if (n_long == 2) type = SHT_ULONG_LONG;
+	    else if (n_long) type = SHT_ULONG;
+	    else if (n_short) type = SHT_USHORT;
+	    else if (n_int) type = SHT_UINT;
+	    else if (n_char) type = SHT_UCHAR;
+	    else type = SHT_UINT;
+	}
+	else if (n_signed) {
+	    if (n_long == 2) type = SHT_LONG_LONG;
+	    else if (n_long) type = SHT_LONG;
+	    else if (n_short) type = SHT_SHORT;
+	    else if (n_int) type = SHT_INT;
+	    else if (n_char) type = SHT_CHAR;
+	    else type = SHT_INT;
+	}
+	else {
+	    if (n_double && n_complex) type = SHT_COMPLEX128;
+	    else if (n_float && n_complex) type = SHT_COMPLEX64;
+	    else if (n_complex) type = SHT_COMPLEX;
+	    else if (n_float) type = SHT_FLOAT;
+	    else if (n_double) type = SHT_DOUBLE;
+	    else if (n_long == 2) type = SHT_LONG_LONG;
+	    else if (n_long) type = SHT_LONG;
+	    else if (n_short) type = SHT_SHORT;
+	    else if (n_int) type = SHT_INT;
+	    else if (n_char) type = SHT_CHAR;
+	    else type = SHT_INT;
+	}
+    }
+    else {
+	if (n_double || n_float || n_complex ||
+	    n_long || n_short || n_char || n_int |
+	    n_signed || n_unsigned)
+	    return 0;
+    }
+    
+    if ((type == SHT_NONE) && (type0 == SHT_NONE))
+	return 0;
+    else if (type == SHT_NONE)
+	type = type0;
+    else if (type0 == SHT_NONE)
+	;
+    else
+	type = sht_set_type(type, sht_type(type0));
+    if (is_volatile)
+	type = sht_set_volatile(type);
+    *type_ptr = type;    
     return 1;
 }
 
@@ -272,6 +474,15 @@ typedef struct
     share_type_t* base;
 } dyn_build_t;
 
+#define DYN_BUILD_FIXED(name)			\
+    share_type_t name##_base[FIXED_SIZE];	\
+    dyn_build_t name = { .size = FIXED_SIZE,	\
+			 .alloc = 0, \
+			 .cur = 0, \
+			 .size0 = FIXED_SIZE, \
+			 .base0 = name##_base,	\
+			 .base = name##_base }
+
 static int dyn_build_need(dyn_build_t* dp, size_t need)
 {
     share_type_t* ptr;
@@ -313,7 +524,7 @@ static int dyn_build_push(dyn_build_t* dp, share_type_t type)
     return 1;
 }
 
-static void* dyn_build_struct(dyn_build_t* dp, size_t size)
+static void* dyn_build(dyn_build_t* dp, size_t size)
 {
     size_t n = size / sizeof(share_type_t);
     void* ptr;
@@ -324,43 +535,56 @@ static void* dyn_build_struct(dyn_build_t* dp, size_t size)
     return ptr;
 }
 
-static size_t sht_sizeof(share_type_t* tptr)
+static size_t sht_bitsizeof(share_type_t* tptr)
 {
-    size_t size = 0;
-    switch(*tptr) {
+    switch(sht_type(*tptr)) {
     case SHT_ARRAY: {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	if ((sp->s == 1) && (sp->size == 0))
-	    size = sizeof(share_type_t);  // pointer to array!
+	    return 8*sizeof(share_type_t);  // pointer to array!
 	else
-	    size = sp->e_size;
-	break;
+	    return 8*sp->e_size;
     }
-    case SHT_STRUCT: {
-	sht_struct_t* sp = (sht_struct_t*) tptr;
-	size = sp->e_size;
-	break;
-    }
-    case SHT_UINT8:   size = 1; break;
-    case SHT_UINT16:  size = 2; break;
-    case SHT_UINT32:  size = 4; break;
-    case SHT_UINT64:  size = 8; break;
-    case SHT_UINT128: size = 16; break;
-    case SHT_INT8:    size = 1; break;
-    case SHT_INT16:   size = 2; break;
-    case SHT_INT32:   size = 4; break;
-    case SHT_INT64:   size = 8; break;
-    case SHT_INT128:  size = 16; break;
-    case SHT_FLOAT32: size = 4; break;
-    case SHT_FLOAT64: size = 8; break;
-    case SHT_FLOAT128: size = 16; break;
-    case SHT_COMPLEX64: size = 8; break;
-    case SHT_COMPLEX128: size = 16; break;
-    case SHT_ATM:     size = sizeof(share_type_t); break;
+    case SHT_STRUCT:
+	return 8*((sht_struct_t*) tptr)->e_size;
+    case SHT_UNION:
+	return 8*((sht_union_t*) tptr)->e_size;
+    case SHT_ATM:
+	return 8*sizeof(share_type_t);
+    case SHT_SIGNED:
+    case SHT_UNSIGNED:
+    case SHT_FLT:
+    case SHT_CMPLX:
+	return sht_bitsize(*tptr);
     default: return 0;
     }
-    return size;
 }
+
+static size_t sht_sizeof(share_type_t* tptr)
+{
+    switch(sht_type(*tptr)) {
+    case SHT_ARRAY: {
+	sht_array_t* sp = (sht_array_t*) tptr;
+	if ((sp->s == 1) && (sp->size == 0))
+	    return sizeof(share_type_t);  // pointer to array!
+	else
+	    return sp->e_size;
+    }
+    case SHT_STRUCT:
+	return ((sht_struct_t*) tptr)->e_size;
+    case SHT_UNION:
+	return ((sht_union_t*) tptr)->e_size;	
+    case SHT_ATM:
+	return sizeof(share_type_t);
+    case SHT_SIGNED:
+    case SHT_UNSIGNED:
+    case SHT_FLT:
+    case SHT_CMPLX:
+	return sht_bytesize(*tptr);
+    default: return 0;
+    }
+}
+
 
 static ERL_NIF_TERM sht_array_opts(ErlNifEnv* env, sht_array_t* sp)
 {
@@ -405,7 +629,7 @@ static ERL_NIF_TERM sht_array_opts(ErlNifEnv* env, sht_array_t* sp)
 
 static ERL_NIF_TERM sht_typeof(ErlNifEnv* env, share_type_t* tptr)
 {
-    switch(*tptr) {
+    switch(sht_type(*tptr)) {
     case SHT_ARRAY: {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	ERL_NIF_TERM elem_type = sht_typeof(env, sht_array_base_type(sp));
@@ -437,30 +661,123 @@ static ERL_NIF_TERM sht_typeof(ErlNifEnv* env, share_type_t* tptr)
 	}
 	return enif_make_tuple2(env, ATOM(struct), list);
     }
-    case SHT_UINT8:   return ATOM(uint8_t);
-    case SHT_UINT16:  return ATOM(uint16_t);
-    case SHT_UINT32:  return ATOM(uint32_t);
-    case SHT_UINT64:  return ATOM(uint64_t);
-    case SHT_UINT128: return ATOM(uint128_t);
-    case SHT_INT8:    return ATOM(int8_t);
-    case SHT_INT16:   return ATOM(int16_t);
-    case SHT_INT32:   return ATOM(int32_t);
-    case SHT_INT64:   return ATOM(int64_t);
-    case SHT_INT128:  return ATOM(int128_t);
-    case SHT_FLOAT32: return ATOM(float32_t);
-    case SHT_FLOAT64: return ATOM(float64_t);
-    case SHT_FLOAT128: return ATOM(float128_t);
-    case SHT_COMPLEX64: return ATOM(complex64_t);
-    case SHT_COMPLEX128: return ATOM(complex128_t);
-    case SHT_ATM:  return ATOM(atm);
-    default: return 0;
+    case SHT_UNION: {
+	sht_union_t* sp = (sht_union_t*) tptr;
+	share_size_t n = sp->n;
+	ERL_NIF_TERM list = enif_make_list(env, 0);
+	int i;
+	
+	for (i = n-1; i >= 0; i--) {
+	    ERL_NIF_TERM field_type;
+	    ERL_NIF_TERM field_name;
+	    ERL_NIF_TERM field;
+	    sht_field_t* fp = &sp->spec[i];
+
+	    field_name = (ERL_NIF_TERM) fp->name;
+	    if (!enif_is_atom(env, field_name))
+		return 0;
+	    if ((field_type = sht_typeof(env, fp->spec + fp->t_offset)) == 0)
+		return 0;
+	    field = enif_make_tuple2(env, field_name, field_type);
+	    list = enif_make_list_cell(env, field, list);
+	}
+	return enif_make_tuple2(env, ATOM(union), list);
+    }
+    case SHT_ATM:
+	return ATOM(atm);
+    case SHT_FLT:
+	switch(sht_bitsize(*tptr)) {
+	case 16: return ATOM(float16_t);
+	case 32: return ATOM(float32_t);
+	case 64: return ATOM(float64_t);
+	case 128: return ATOM(float128_t);
+	default: return 0;
+	}
+    case SHT_CMPLX:
+	switch(sht_bitsize(*tptr)) {
+	case 64: return ATOM(complex64_t);
+	case 128: return ATOM(complex128_t);
+	default: return 0;
+	}
+    case SHT_SIGNED: {
+	unsigned size = sht_bitsize(*tptr);
+	ERL_NIF_TERM type;
+	switch(size) {
+	case 8:  type=ATOM(int8_t); break;
+	case 16: type=ATOM(int16_t); break;
+	case 32: type=ATOM(int32_t); break;
+	case 64: type=ATOM(int64_t); break;
+	case 128: type=ATOM(int128_t); break;
+	default: return 0;
+	}
+	if (sht_is_bitfield(*tptr)) {
+	    unsigned bsize = sht_bitfieldsize(*tptr);
+	    return enif_make_tuple2(env,
+				    type,
+				    enif_make_uint(env, bsize));
+	}
+	return type;
+    }
+    case SHT_UNSIGNED: {
+	unsigned size = sht_bitsize(*tptr);
+	ERL_NIF_TERM type;
+	switch(size) {
+ 	case 8: type=ATOM(uint8_t); break;
+	case 16: type=ATOM(uint16_t); break;
+	case 32: type=ATOM(uint32_t); break;
+	case 64: type=ATOM(uint64_t); break;
+	case 128: type=ATOM(uint128_t); break;
+	default: return 0;
+	}	
+	if (sht_is_bitfield(*tptr)) {
+	    unsigned bsize = sht_bitfieldsize(*tptr);	    
+	    return enif_make_tuple2(env,
+				    type,
+				    enif_make_uint(env, bsize));
+	}
+	return type;
+    }
+    default:
+	return 0;
+    }
+    return enif_make_badarg(env);
+}
+
+// return "natural" alignment in bits
+static size_t sht_bitalign(share_type_t* tptr)
+{
+    switch(sht_type(*tptr)) {
+    case SHT_ARRAY: {
+	sht_array_t* sp = (sht_array_t*) tptr;
+	return 8*sp->alignment;
+    }
+    case SHT_STRUCT: {
+	sht_struct_t* sp = (sht_struct_t*) tptr;
+	return 8*sp->alignment;
+    }
+    case SHT_UNION: {
+	sht_union_t* sp = (sht_union_t*) tptr;
+	return 8*sp->alignment;
+    }
+    case SHT_ATM:
+	return 8*sizeof(share_type_t);
+    case SHT_FLT:
+	return sht_bitsize(*tptr);
+    case SHT_CMPLX:
+	return sht_bitsize(*tptr);
+    case SHT_UNSIGNED:
+	return sht_bitsize(*tptr);
+    case SHT_SIGNED:
+	return sht_bitsize(*tptr);
+    default:
+	return 0;
     }
 }
 
 // return "natural" alignment in bytes
 static size_t sht_align(share_type_t* tptr)
 {
-    switch(*tptr) {
+    switch(sht_type(*tptr)) {
     case SHT_ARRAY: {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	return sp->alignment;
@@ -469,30 +786,61 @@ static size_t sht_align(share_type_t* tptr)
 	sht_struct_t* sp = (sht_struct_t*) tptr;
 	return sp->alignment;
     }
-    case SHT_UINT8:   return 1;
-    case SHT_UINT16:  return 2;
-    case SHT_UINT32:  return 4;
-    case SHT_UINT64:  return 8;
-    case SHT_UINT128: return 16;
-    case SHT_INT8:    return 1;
-    case SHT_INT16:   return 2;
-    case SHT_INT32:   return 4;
-    case SHT_INT64:   return 8;
-    case SHT_INT128:  return 16;
-    case SHT_FLOAT32: return 4;
-    case SHT_FLOAT64: return 8;
-    case SHT_FLOAT128: return 16;
-    case SHT_COMPLEX64:  return 4;
-    case SHT_COMPLEX128: return 8;
-    case SHT_ATM: return sizeof(share_type_t); // word_t?
-    default: return 0;
+    case SHT_UNION: {
+	sht_union_t* sp = (sht_union_t*) tptr;
+	return sp->alignment;
+    }
+    case SHT_ATM:
+	return sizeof(share_type_t);
+    case SHT_FLT: {
+	size_t size = sht_bitsize(*tptr);
+	switch(size) {
+	case 16: return 2;
+	case 32: return 4;
+	case 64: return 8;
+	case 128: return 16;
+	}
+	return 0;
+    }
+    case SHT_CMPLX: {
+	size_t size = sht_bitsize(*tptr);
+	switch(size) {
+	case 64: return 4;  // same alignemnt as float
+	case 128: return 8; // same alignemnt as double
+	}
+	return 0;
+    }
+    case SHT_UNSIGNED: {
+	size_t size = sht_bitsize(*tptr);
+	switch(size) {
+	case 8: return 1;
+	case 16: return 2;
+	case 32: return 4;
+	case 64: return 8;
+	case 128: return 16;
+	}
+	return 0;
+    }
+    case SHT_SIGNED: {
+	size_t size = sht_bitsize(*tptr);
+	switch(size) {
+	case 8: return 1;
+	case 16: return 2;
+	case 32: return 4;
+	case 64: return 8;
+	case 128: return 16;
+	}
+	return 0;
+    }
+    default:
+	return 0;
     }
 }
 
 // binary size of (internal) type spec (number of share_type_t elements)
 static size_t sht_sizeof_spec(share_type_t* tptr)
 {
-    switch(*tptr) {
+    switch(sht_type(*tptr)) {
     case SHT_ARRAY: {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	size_t asize = sizeof(sht_array_t)/sizeof(share_type_t);
@@ -504,6 +852,17 @@ static size_t sht_sizeof_spec(share_type_t* tptr)
     case SHT_STRUCT: {
 	sht_struct_t* sp = (sht_struct_t*) tptr;
 	size_t size = sizeof(sht_struct_t)/sizeof(share_type_t);
+	int i;
+	for (i = 0; i < sp->n; i++) {
+	    sht_field_t* fp = &sp->spec[i];
+	    size += sizeof(sht_field_t)/sizeof(share_type_t);
+	    size += sht_sizeof_spec(fp->spec + fp->t_offset);
+	}
+	return size;
+    }
+    case SHT_UNION: {
+	sht_union_t* sp = (sht_union_t*) tptr;
+	size_t size = sizeof(sht_union_t)/sizeof(share_type_t);
 	int i;
 	for (i = 0; i < sp->n; i++) {
 	    sht_field_t* fp = &sp->spec[i];
@@ -564,12 +923,112 @@ static ERL_NIF_TERM make_int128(ErlNifEnv* env, void* ptr)
     return enif_make_big(env, (ERL_NIF_TERM*) ptr, 16/sizeof(ERL_NIF_TERM));
 }
 
+#define VALUE_MASK(size) ((1 << (size)) - 1)
 
-static ERL_NIF_TERM make_value(ErlNifEnv* env, share_type_t* type,
-			       void* ptr)
+#ifdef LITTLE_ENDIAN
+#define EXTRACT_VALUE(ptr,var,offset,size) do {			\
+	DBGF("extract_LE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
+	(var) <<= (8*sizeof(val)-(size)-(offset));			\
+	(var) >>= (8*sizeof(val)-(size));				\
+	DBGF("val=%d\r\n", (var));					\
+    } while(0)
+#else
+#define EXRACT_VALUE(ptr,var,offset,size) do {				\
+	DBGF("extract_BE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
+	(var) <<= (offset);						\
+	(var) >>= (8*sizeof(val)-(size));				\
+	DBGF("val=%d\r\n", (var));					\
+    } while(0)
+#endif
+
+#ifdef LITTLE_ENDIAN
+#define INJECT_VALUE(ptr,var,offset,size,fld) do {			\
+	DBGF("inject_LE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
+	(var) = (((fld) & VALUE_MASK(size)) << (offset)) |		\
+	    ((var) & ~(VALUE_MASK(size) << (offset)));			\
+	DBGF("val=%d\r\n", (var));				\
+    } while(0)
+#else
+#define INJECT_VALUE(ptr,var,offset,size,fld) do { 			\
+	DBGF("inject_BE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
+	(var) = (((fld) & VALUE_MASK(size)) << (8*sizeof(val)-(size)-(offset))) | \
+	    ((var) & ~(VALUE_MASK(size) << (8*sizeof(val)-(size)-(offset)))); \
+	DBGF("val=%d\r\n", (var));					\
+    } while(0)
+#endif
+
+
+// extract bit field values
+static ERL_NIF_TERM get_bit_value(ErlNifEnv* env, share_type_t* type,
+				  void* ptr, size_t offset)
 {
-    switch(*type) {
-    case SHT_ATM: {
+    size_t fsize = sht_bitfieldsize(*type);
+    size_t size = sht_bitsize(*type);
+
+    switch (sht_type(*type)) {
+    case SHT_UNSIGNED:
+	switch (size) {
+	case 8: {
+	    uint8_t val = *((uint8_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_ulong(env, val);
+	}
+	case 16: {
+	    uint16_t val = *((uint16_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_ulong(env, val);
+	}
+	case 32: {
+	    uint32_t val = *((uint32_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_ulong(env, val);
+	}
+	case 64: {
+	    uint64_t val = *((uint64_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_uint64(env, val);
+	}
+	default:
+	    break;
+	}
+	break;
+    case SHT_SIGNED:
+	switch (size) {
+	case 8: {
+	    int8_t val = *((int8_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_long(env, val);
+	}
+	case 16: {
+	    int16_t val = *((int16_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_long(env, val);
+	}
+	case 32: {
+	    int32_t val = *((int32_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_long(env, val);
+	}
+	case 64: {
+	    int64_t val = *((int64_t*) ptr);
+	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    return enif_make_int64(env, val);
+	}
+	default:
+	    break;
+	}
+	break;
+    default:
+	break;
+    }
+    return 0;
+}
+
+static ERL_NIF_TERM get_value(ErlNifEnv* env, share_type_t* type,
+			      void* ptr, sht_field_t* fp)
+{
+    switch(sht_type(*type)) {
+    case SHT_ATM: {  // FIXME: remove?
 	ERL_NIF_TERM name = *((ERL_NIF_TERM*) ptr);
 	if (!enif_is_atom(env, name))
 	    return 0;
@@ -582,8 +1041,10 @@ static ERL_NIF_TERM make_value(ErlNifEnv* env, share_type_t* type,
 	int i;
 	// build reverse
 	for (i = sp->size-1; i >= 0; i--) {
-	    ERL_NIF_TERM elem = make_value(env, elem_type,
-					   ptr + i*sp->stride);
+	    ERL_NIF_TERM elem = get_value(env, elem_type,
+					  ptr + i*sp->stride, fp);
+	    if (elem == 0)
+		return 0;
 	    list = enif_make_list_cell(env, elem, list);
 	}
 	return list;
@@ -594,31 +1055,70 @@ static ERL_NIF_TERM make_value(ErlNifEnv* env, share_type_t* type,
 	int i;
 	// buld reverse
 	for (i = sp->n-1; i >= 0; i--) {
-	    sht_field_t* fp = &sp->spec[i];
-	    ERL_NIF_TERM elem = make_value(env, fp->spec + fp->t_offset,
-					   ptr + fp->e_offset);
+	    sht_field_t* sfp = &sp->spec[i];
+	    share_type_t* tptr = sfp->spec + sfp->t_offset;
+	    ERL_NIF_TERM elem;
+	    
+	    if (sht_is_bitfield(*tptr)) {
+		elem = get_bit_value(env,tptr,ptr+sfp->e_offset,sfp->b_offset);
+	    }
+	    else {
+		elem = get_value(env,tptr,ptr+sfp->e_offset,fp);
+	    }
+	    if (elem == 0)
+		return 0;
 	    list = enif_make_list_cell(env, elem, list);
 	}
 	return list;
     }
-    case SHT_UINT8:   return enif_make_ulong(env, *((uint8_t*)ptr));
-    case SHT_UINT16:  return enif_make_ulong(env, *((uint16_t*)ptr));
-    case SHT_UINT32:  return enif_make_ulong(env, *((uint32_t*)ptr));
-    case SHT_UINT64:  return enif_make_uint64(env, *((ErlNifUInt64*)ptr));
-    case SHT_UINT128: return make_uint128(env, ptr);	
-    case SHT_INT8:    return enif_make_long(env, *((int8_t*)ptr));
-    case SHT_INT16:   return enif_make_long(env, *((int16_t*)ptr));
-    case SHT_INT32:   return enif_make_long(env, *((int32_t*)ptr));
-    case SHT_INT64:   return enif_make_int64(env, *((ErlNifSInt64*)ptr));
-    case SHT_INT128:  return make_int128(env, ptr);
-    case SHT_FLOAT32: return enif_make_double(env, *((float*)ptr));
-    case SHT_FLOAT64: return enif_make_double(env, *((double*)ptr));
-    case SHT_FLOAT128: return make_float128(env, ptr);
-    case SHT_COMPLEX64:  return make_complex64(env, ptr);
-    case SHT_COMPLEX128:  return make_complex128(env, ptr);
-    default: break;
+    case SHT_UNSIGNED: {
+	unsigned size = sht_bitsize(*type);
+	if (sht_is_bitfield(*type))
+	    return get_bit_value(env, type, ptr, fp->b_offset);
+	switch(size) {
+	case 8: return enif_make_ulong(env, *((uint8_t*)ptr));
+	case 16: return enif_make_ulong(env, *((uint16_t*)ptr));
+	case 32: return enif_make_ulong(env, *((uint32_t*)ptr));
+	case 64: return enif_make_uint64(env, *((ErlNifUInt64*)ptr));
+	case 128: return make_uint128(env, ptr);
+	default: return 0;
+	}
+	break;	
     }
-    return enif_make_badarg(env);
+    case SHT_SIGNED: {
+	unsigned size = sht_bitsize(*type);
+	if (sht_is_bitfield(*type))
+	    return get_bit_value(env, type, ptr, fp->b_offset);
+	switch(size) {
+	case 8: return enif_make_long(env, *((int8_t*)ptr));
+	case 16: return enif_make_long(env, *((int16_t*)ptr));
+	case 32: return enif_make_long(env, *((int32_t*)ptr));
+	case 64: return enif_make_int64(env, *((ErlNifSInt64*)ptr));
+	case 128: return make_int128(env, ptr);
+	default: return 0;
+	}
+    }
+    case SHT_FLT: {
+	unsigned size = sht_bitsize(*type);
+	switch(size) {
+	case 16: return enif_make_double(env, *((float*)ptr)); // FIXME
+	case 32: return enif_make_double(env, *((float*)ptr));
+	case 64: return enif_make_double(env, *((double*)ptr));
+	case 128: return make_float128(env, ptr);
+	default: return 0;
+	}
+    }
+    case SHT_CMPLX: {
+	unsigned size = sht_bitsize(*type);
+	switch(size) {
+	case 64: return make_complex64(env, ptr);
+	case 128: return make_complex128(env, ptr);
+	default: return 0;
+	}
+    }
+    default:
+	return 0;
+    }
 }
 
 // type() =
@@ -676,7 +1176,10 @@ static int set_array_alignment(ErlNifEnv* env, ERL_NIF_TERM arg,
 static int set_default_alignment(ErlNifEnv* env, sht_array_t* sp)
 {
     sht_array_t* shape = (sht_array_t*) sp;
-    size_t align = sizeof(uintptr_t);
+    // sht_type_t*  elem_type = sht_array_base_type(sp);
+    share_type_t*  elem_type = sht_array_elem_type(sp);
+    //size_t align = sizeof(uintptr_t);
+    size_t align = sht_align(elem_type);
     int i;
 
     for (i = 0; i < sp->s; i++)
@@ -737,7 +1240,6 @@ static int set_default_stride(ErlNifEnv* env, sht_array_t* sp,
     return 1;
 }
 
-
 // process array_size() = size_t() | [size_t()]
 static int build_array_size(ErlNifEnv* env, ERL_NIF_TERM arg, sht_array_t* sp,
 			    dyn_build_t* dp)
@@ -773,7 +1275,7 @@ static int build_array_size(ErlNifEnv* env, ERL_NIF_TERM arg, sht_array_t* sp,
 	}
 	if (!enif_is_empty_list(env, list))
 	    return 0;
-	if (!(shape = dyn_build_struct(dp, (len-1)*sizeof(sht_array_t))))
+	if (!(shape = dyn_build(dp, (len-1)*sizeof(sht_array_t))))
 	    return 0;
 	shape = (sht_array_t*) sp;
 	
@@ -829,31 +1331,215 @@ static int build_array_size_opt(ErlNifEnv* env, ERL_NIF_TERM arg,
     return 0;
 }
 
-static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, bool_t is_array,
-		      dyn_build_t* dp);
+static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg,dyn_build_t* dp);
 
-static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,
-			     bool_t is_array, dyn_build_t* dp)
+static size_t inline align_offset(size_t offset, size_t align)
+{
+    return (offset + align - 1) & ~(align - 1);
+}
+
+static void update_offset(sht_struct_t* sp, int j,
+			  int offset, int new_offset)
+{
+    while(j >= 0) {
+	sht_field_t* fp = &sp->spec[j];
+	share_type_t* tptr = fp->spec + fp->t_offset;
+	DEBUGF("backpatch: field[%d] offset=%d offset'=%d",
+	       j, offset, new_offset);
+	if (sht_is_bitfield(*tptr) &&
+	    (fp->e_offset == offset)) {
+	    DEBUGF("  set offset=%d", new_offset);
+	    fp->e_offset = new_offset;
+	}
+	else
+	    return;
+	j--;
+    }
+}
+
+static void update_bitsize(sht_struct_t* sp, int j,
+			   int offset, int bit_size)
+{
+    while(j >= 0) {
+	sht_field_t* fp = &sp->spec[j];
+	share_type_t* tptr = fp->spec + fp->t_offset;
+	if (sht_is_bitfield(*tptr) && (fp->e_offset == offset)) {
+	    share_type_t type;
+	    DEBUGF("backpatch: field[%d] bitsize=%d, bitsize'=%d",
+		   j, offset, sht_bitfieldsize(*tptr), bit_size);
+	    type = *tptr;
+	    *tptr = sht_set_bitsize(type,bit_size);
+	}
+	else
+	    return;
+	j--;
+    }
+}
+
+// https://www.gnu.org/software/c-intro-and-ref/manual/html_node/Bit-Field-Packing.html
+
+static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 {
     ERL_NIF_TERM hd, tl;
     unsigned int len;
     sht_struct_t* sp;
     int i;
-    int cur0;
-    int offset;
-    int pad;
-    int max_align = 0;  // max alignment of struct fields
-    size_t size;
+    int offset=0;         // byte offset from start of struct
+    int bit_position=0;   // bit offset in each storage unit
+    share_type_t base_type = 0;  // curent field base type 
+    int base_size =0;            // size of base type
+    int base_alignment=0;        //alignment of base type
+    int storage_unit_size=0;     // size of storage unit
+    int storage_unit_alignment=1; // alignment of storage unit
+    share_type_t storage_unit_base_type=0; // base type of storage unit
+    int storage_unit_offset = 0;
+    size_t max_align = 0;  // max alignment of struct fields
+    size_t t_size;
+    unsigned int cur0;     // start position
     
     if (!enif_get_list_length(env, list, &len))
 	return 0;
-    size = sizeof(sht_struct_t)+len*sizeof(sht_field_t);
-    if ((sp = dyn_build_struct(dp, size)) == 0)
+    t_size = sizeof(sht_struct_t)+len*sizeof(sht_field_t);
+    if ((sp = dyn_build(dp, t_size)) == 0)
 	return 0;
     sp->type = SHT_STRUCT;
     sp->n    = len;
-    cur0 = dp->cur;  // current build position
+    cur0 = dp->cur;  // save current build position
     offset = 0;
+    i = 0;
+    while(enif_get_list_cell(env, list, &hd, &tl)) {
+	const ERL_NIF_TERM* felem;
+	sht_field_t* fp = &sp->spec[i];
+	share_type_t* tptr;
+	int farity;
+	int fcur;
+		
+	if (!enif_get_tuple(env, hd, &farity, &felem) || (farity!=2))
+	    return 0;
+	if (!enif_is_atom(env, felem[0]))
+	    return 0;
+
+	fp->name = felem[0];
+	fcur = dp->cur;
+	fp->t_offset = (dp->base+fcur) - fp->spec;
+	if (!build_type(env, felem[1], dp))
+	    return 0;
+	tptr = fp->spec + fp->t_offset;
+	if ((base_size = sht_sizeof(tptr)) == 0)
+	    return 0;
+	base_alignment = sht_align(tptr);
+	if (base_alignment > max_align)
+	    max_align = base_alignment;
+	base_type = *tptr;
+
+	DEBUGF("field[%d] offset=%d,size=%d,align=%d,type=%d",
+	       i, offset, base_size, base_alignment, sht_bitsize(base_type));
+	
+	if (sht_is_bitfield(*tptr)) {
+	    int bit_size = sht_bitfieldsize(*tptr);
+
+	    DEBUGF("  bitsize=%d,usize=%d,ualign=%d,utype=%d",
+		   bit_size, storage_unit_size, storage_unit_alignment,
+		   sht_bitsize(storage_unit_base_type));
+
+	    if (storage_unit_base_type == 0) {
+		offset = align_offset(offset, base_alignment);
+		storage_unit_offset = offset;
+		storage_unit_size = base_size;
+		storage_unit_alignment = base_alignment;
+		storage_unit_base_type = base_type;
+		bit_position = 0;
+	    }
+	    else {
+		if (base_size > storage_unit_size) {
+		    int new_alignment = base_alignment;
+		    if (new_alignment > storage_unit_alignment) {
+			int new_offset = align_offset(storage_unit_offset,
+						      new_alignment);
+			if (new_offset != storage_unit_offset) {
+			    update_offset(sp, i-1, storage_unit_offset,
+					  new_offset);
+			    storage_unit_offset = new_offset;
+			    offset = new_offset;
+			}
+			storage_unit_alignment = new_alignment;
+		    }
+		    storage_unit_size = base_size;
+		    storage_unit_base_type = base_type;
+		    update_bitsize(sp, i-1, storage_unit_offset,
+				   storage_unit_size*8);
+		}
+	    }
+	    if (bit_position + bit_size > storage_unit_size*8) {
+		if (base_size > storage_unit_size)
+		    ;
+		else {
+		    offset = storage_unit_offset + storage_unit_size;
+		    offset = align_offset(offset, base_alignment);
+		    storage_unit_offset = offset;
+		    storage_unit_size = base_size;
+		    storage_unit_alignment = base_alignment;
+		    storage_unit_base_type = base_type;
+		    bit_position = 0;
+		}
+	    }
+	    fp->e_offset = storage_unit_offset;
+	    fp->b_offset = bit_position;
+	    *tptr = sht_set_bitsize(*tptr,storage_unit_size*8);
+
+	    bit_position += bit_size;
+	    // if (bit_position == storage_unit_size*8) {
+	    // offset = storage_unit_offset + storage_unit_size;
+	    // storage_unit_base_type = 0;
+	    // }
+	}
+	else {  // regular field 
+	    if (storage_unit_base_type != 0) {
+		offset = storage_unit_offset + storage_unit_size;
+		storage_unit_base_type = 0;
+		bit_position = 0;
+	    }
+	    offset = align_offset(offset, base_alignment);
+
+	    fp->e_offset = offset;
+	    fp->b_offset = 0;
+
+	    offset += base_size;
+	}
+	i++;
+	list = tl;
+    }
+    
+    sp->t_size = dp->cur - cur0;
+    if (storage_unit_base_type != 0)
+	offset = storage_unit_offset + storage_unit_size;
+    sp->e_size = offset;
+    sp->alignment = max_align;
+    return 1;    
+}
+
+
+static int build_union_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
+{
+    ERL_NIF_TERM hd, tl;
+    unsigned int len;
+    sht_union_t* sp;
+    int i;
+    int cur0;
+    // int offset;
+    // int pad;
+    int max_size = 0;    
+    int max_align = 0;  // max alignment of union fields
+    size_t size;
+
+    if (!enif_get_list_length(env, list, &len))
+	return 0;
+    size = sizeof(sht_union_t)+len*sizeof(sht_field_t);
+    if ((sp = dyn_build(dp, size)) == 0)
+	return 0;
+    sp->type = SHT_UNION;
+    sp->n    = len;
+    cur0 = dp->cur;  // current build position
     i = 0;
     while(enif_get_list_cell(env, list, &hd, &tl)) {
 	const ERL_NIF_TERM* felem;
@@ -870,7 +1556,7 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,
 	fp->name = felem[0];
 	fcur = dp->cur;
 	fp->t_offset = (dp->base+fcur) - fp->spec;
-	if (!build_type(env, felem[1], false, dp))
+	if (!build_type(env, felem[1], dp))
 	    return 0;	
 	if ((size = sht_sizeof(&dp->base[fcur])) == 0)
 	    return 0;
@@ -879,16 +1565,16 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,
 
 	if (align > max_align)
 	    max_align = align;
-	pad = (align - (offset % align)) % align;
-	fp->e_offset = offset + pad;
-	// enif_fprintf(stdout, "field %d: offset=%d, align=%d, size=%d, pad=%d\r\n", i, offset, align, size, pad);
-	offset += (pad+size);
+	// pad = (align - (offset % align)) % align;
+	fp->e_offset = 0;
+	if (size > max_size)
+	    max_size = size;
 	i++;
 	list = tl;
     }
     sp->t_size = dp->cur - cur0;
-    pad = (max_align - (offset % max_align)) % max_align;
-    sp->e_size = offset+pad;
+    // pad = (max_align - (offset % max_align)) % max_align;
+    sp->e_size = max_size;
     sp->alignment = max_align;
     return 1;
 }
@@ -896,7 +1582,6 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,
 
 static int build_array_type(ErlNifEnv* env,
 			    ERL_NIF_TERM options, ERL_NIF_TERM base_type,
-			    bool_t is_array,
 			    dyn_build_t* dp)
 {
     sht_array_t* sp;
@@ -909,7 +1594,7 @@ static int build_array_type(ErlNifEnv* env,
     int is_option_list;
     int i;
 	    
-    if (!(sp = dyn_build_struct(dp, sizeof(sht_array_t))))
+    if (!(sp = dyn_build(dp, sizeof(sht_array_t))))
 	return 0;
 
     // build and init array with sub arrays
@@ -950,10 +1635,9 @@ static int build_array_type(ErlNifEnv* env,
 	}
     }
     cur = dp->cur;
-    if (!build_type(env, base_type, true, dp))
+    if (!build_type(env, base_type, dp))
 	return 0;
     elem_size = sht_sizeof(&dp->base[cur]);
-    // enif_fprintf(stdout, "elem_size=%d\r\n", elem_size);
     
     if (alignment_elem) {
 	if (!set_array_alignment(env, alignment_elem, sp))
@@ -979,10 +1663,9 @@ static int build_array_type(ErlNifEnv* env,
     return 1;
 }
 
-static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, bool_t is_array,
-		      dyn_build_t* dp)
+static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, dyn_build_t* dp)
 {
-    if (enif_is_atom(env, arg)) {
+    if (enif_is_atom(env, arg)||enif_is_list(env, arg)) {
 	share_type_t type;
 	if (!build_type0(env, arg, &type))
 	    return 0;
@@ -994,11 +1677,32 @@ static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, bool_t is_array,
 	
 	if (!enif_get_tuple(env, arg, &arity, &elem))
 	    return 0;
-	if ((arity == 3) && (elem[0] == ATOM(array))) {
-	    return build_array_type(env, elem[1], elem[2], is_array, dp);
+	if (arity == 2) {
+	    if (elem[0] == ATOM(struct)) {
+		return build_struct_type(env, elem[1], dp);
+	    }
+	    else if (elem[0] == ATOM(union)) {
+		return build_union_type(env, elem[1], dp);
+	    }
+	    else if (enif_is_atom(env,elem[0]) || enif_is_list(env,elem[0])) {
+		share_type_t type;
+		size_t size;
+		if (!build_type0(env, elem[0], &type))
+		    return 0;
+		if (!sht_is_integer(type))
+		    return 0;
+		if (!get_size_t(env, elem[1], &size))
+		    return 0;
+		if (size > sht_bitsize(type)) {
+		    DEBUGF("width %d too large for type %d", size,
+			   sht_bitsize(type));
+		    return 0;
+		}
+		return dyn_build_push(dp, sht_make_bitfield(type,size));
+	    }
 	}
-	else if ((arity == 2) && (elem[0] == ATOM(struct))) {
-	    return build_struct_type(env, elem[1], is_array, dp);
+	else if ((arity == 3) && (elem[0] == ATOM(array))) {
+	    return build_array_type(env, elem[1], elem[2], dp);
 	}
 	else
 	    return 0;
@@ -1060,10 +1764,31 @@ static int get_array_ent_by_index(ErlNifEnv* env, unsigned flags,
     return 1;
 }
 
-// FIXME: hash and precompute key offsets and store in sht_struct
+static int get_union_field_by_atom(ErlNifEnv* env, ERL_NIF_TERM key,
+				   share_type_t* tptr, share_type_t** type_ret,
+				   uint8_t* ptr, uint8_t** ptr_ret,
+				   sht_field_t** fp_ret)
+{
+    sht_union_t* sp = (sht_union_t*) tptr;
+    int i;
+
+    for (i = 0; i < (int)sp->n; i++) {
+	sht_field_t* fp = &sp->spec[i];
+	if (fp->name == key) {
+	    *ptr_ret = ptr + fp->e_offset;
+	    *type_ret = fp->spec + fp->t_offset;
+	    if (fp_ret) *fp_ret = fp;
+	    return 1;
+	}
+    }
+    return 0;
+}
+
+
 static int get_struct_field_by_atom(ErlNifEnv* env, ERL_NIF_TERM key,
 				    share_type_t* tptr, share_type_t** type_ret,
-				    uint8_t* ptr, uint8_t** ptr_ret)
+				    uint8_t* ptr, uint8_t** ptr_ret,
+				    sht_field_t** fp_ret)
 {
     sht_struct_t* sp = (sht_struct_t*) tptr;
     int i;
@@ -1071,21 +1796,21 @@ static int get_struct_field_by_atom(ErlNifEnv* env, ERL_NIF_TERM key,
     for (i = 0; i < (int)sp->n; i++) {
 	sht_field_t* fp = &sp->spec[i];
 	if (fp->name == key) {
-	    ptr = ptr + fp->e_offset;
 	    tptr = fp->spec + fp->t_offset;
-	    break;
+	    *ptr_ret = ptr + fp->e_offset;
+	    if (fp_ret) *fp_ret = fp;
+	    *type_ret = tptr;
+	    return 1;
 	}
     }
-    *type_ret = tptr;
-    *ptr_ret = ptr;
-    return 1;
+    return 0;
 }
 
 
-// FIXME: hash and precompute key offsets and store in sht_struct
 static int get_struct_field_by_index(ErlNifEnv* env, unsigned int index,
 				     share_type_t* tptr,share_type_t** type_ret,
-				     uint8_t* ptr, uint8_t** ptr_ret)
+				     uint8_t* ptr, uint8_t** ptr_ret,
+				     sht_field_t** fp_ret)
 {
     sht_struct_t* sp = (sht_struct_t*) tptr;
     sht_field_t* fp;
@@ -1093,8 +1818,10 @@ static int get_struct_field_by_index(ErlNifEnv* env, unsigned int index,
     if (index >= sp->n)
 	return 0;
     fp = &sp->spec[index];
-    *type_ret = fp->spec + fp->t_offset;
+    tptr = fp->spec + fp->t_offset;
     *ptr_ret = ptr + fp->e_offset;
+    if (fp_ret) *fp_ret = fp;
+    *type_ret = tptr;
     return 1;
 }
 
@@ -1115,30 +1842,36 @@ static int get_struct_field_by_index(ErlNifEnv* env, unsigned int index,
 static int get_path(ErlNifEnv* env, ERL_NIF_TERM path,
 		    unsigned flags,
 		    share_type_t* tptr, share_type_t** type_ret,
-		    uint8_t* ptr, uint8_t** ptr_ret)
+		    uint8_t* ptr, uint8_t** ptr_ret,
+		    sht_field_t** fp_ret)
 {
     ERL_NIF_TERM hd, tl;
+    sht_field_t* fp = NULL;
     
     while(enif_get_list_cell(env, path, &hd, &tl)) {
 	unsigned int index;
 
 	if (enif_get_uint(env, hd, &index)) {  // array index or key=index
-	    if (sht_is_array(tptr)) {
+	    if (sht_is_array(*tptr)) {
 		if (!get_array_ent_by_index(env, flags,
 					    index, tptr, &tptr, ptr, &ptr))
 		    return 0;
 	    }
-	    else if (sht_is_struct(tptr)) {
+	    else if (sht_is_struct(*tptr)) {
 		if (!get_struct_field_by_index(env,
-					       index,tptr,&tptr,ptr,&ptr))
+					       index,tptr,&tptr,ptr,&ptr,&fp))
 		    return 0;
 	    }
 	    else
 		return 0;
 	}	
 	else if (enif_is_atom(env, hd)) {  // access field x | key=x
-	    if (sht_is_struct(tptr)) {
-		if (!get_struct_field_by_atom(env,hd,tptr,&tptr,ptr,&ptr))
+	    if (sht_is_struct(*tptr)) {
+		if (!get_struct_field_by_atom(env,hd,tptr,&tptr,ptr,&ptr,&fp))
+		    return 0;
+	    }
+	    else if (sht_is_union(*tptr)) {
+		if (!get_union_field_by_atom(env,hd,tptr,&tptr,ptr,&ptr,&fp))
 		    return 0;
 	    }
 	    else
@@ -1152,6 +1885,7 @@ static int get_path(ErlNifEnv* env, ERL_NIF_TERM path,
 	return 0;
     *type_ret = tptr;
     *ptr_ret = ptr;
+    if (fp_ret) *fp_ret = fp;
     return 1;
 }
 
@@ -1248,15 +1982,9 @@ static ERL_NIF_TERM share_new_type(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     nif_ctx_t* ctx = (nif_ctx_t*) enif_priv_data(env);    
     ERL_NIF_TERM term;
     share_type_t* tptr;
-    dyn_build_t dt;
-    share_type_t fixed[FIXED_SIZE];
+    DYN_BUILD_FIXED(dt);
 
-    dt.alloc = 0;
-    dt.size = dt.size0 = FIXED_SIZE;
-    dt.base = dt.base0 = fixed;
-    dt.cur  = 0;
-
-    if (!build_type(env, argv[0], false, &dt)) {
+    if (!build_type(env, argv[0], &dt)) {
 	dyn_build_clean(&dt);
 	return enif_make_badarg(env);
     }
@@ -1298,11 +2026,59 @@ static ERL_NIF_TERM share_new(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[
     return term;
 }
 
-static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
-		     ERL_NIF_TERM value)
+static int set_bit_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
+			 size_t offset, ERL_NIF_TERM value)
 {
+    uint64_t u64;
+    size_t fsize;
+    size_t size;
+    
+    if (!enif_get_uint64(env, value, &u64)) {
+	if (!enif_get_int64(env, value, (int64_t*) &u64))
+	    return 0;
+    }    
+    fsize = sht_bitfieldsize(*tptr);
+    size = sht_bitsize(*tptr);
+    DBGF("set_bit_value: ptr=%p,offset=%d,size=%d,fsize=%d\r\n",
+	 ptr, offset, size, fsize);
+    
+    switch (size) {
+    case 8: {
+	uint8_t val = *ptr;
+	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	*((uint8_t*)ptr) = val;
+	break;
+    }
+    case 16: {
+	uint16_t val = *(uint16_t*) ptr;
+	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	*((uint16_t*)ptr) = val;
+	break;
+    }
+    case 32: {
+	uint32_t val = *(uint32_t*) ptr;
+	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	*((uint32_t*)ptr) = val;
+	break;
+    }
+    case 64: {
+	uint64_t val = *(uint64_t*) ptr;
+	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	*((uint64_t*)ptr) = val;
+	break;
+    }
+    default:
+	return 0;
+    }
+    return 1;
+}
 
-    switch(*tptr) {
+
+static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
+		     sht_field_t* fp, ERL_NIF_TERM value)
+		     
+{
+    switch(sht_type(*tptr)) {
     case SHT_ARRAY: {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	share_type_t* elem_type = sht_array_elem_type(sp);
@@ -1311,7 +2087,7 @@ static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
 	
 	while(enif_get_list_cell(env, list, &hd, &tl) && (i < sp->size)) {
 	    if (!set_value(env, elem_type,
-			   ptr + i*sp->stride, hd))
+			   ptr + i*sp->stride, fp, hd))
 		return 0;
 	    i++;
 	    list = tl;
@@ -1328,9 +2104,17 @@ static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
 	
 	while(enif_get_list_cell(env, list, &hd, &tl) && (i < sp->n)) {
 	    sht_field_t* fp = &sp->spec[i];
-	    if (!set_value(env, fp->spec + fp->t_offset,
-			   ptr + fp->e_offset, hd))
-		return 0;
+	    tptr = fp->spec + fp->t_offset;
+	    if (sht_is_bitfield(*tptr)) {
+		if (!set_bit_value(env, tptr,
+				   ptr+fp->e_offset,
+				   fp->b_offset, hd))
+		    return 0;
+	    }
+	    else {
+		if (!set_value(env, tptr, ptr+fp->e_offset, fp, hd))
+		    return 0;
+	    }
 	    i++;
 	    list = tl;
 	}
@@ -1339,22 +2123,17 @@ static int set_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
 	    return 0;
 	return 1;	
     }
-    case SHT_UINT8:
-    case SHT_UINT16:
-    case SHT_UINT32:
-    case SHT_UINT64:	
-    case SHT_UINT128:
-    case SHT_INT8:
-    case SHT_INT16:
-    case SHT_INT32:
-    case SHT_INT64:
-    case SHT_INT128:
-    case SHT_FLOAT16:
-    case SHT_FLOAT32:
-    case SHT_FLOAT64:
-    case SHT_FLOAT128:
-    case SHT_COMPLEX64:
-    case SHT_COMPLEX128: {
+    case SHT_SIGNED:
+    case SHT_UNSIGNED:
+	if (sht_is_bitfield(*tptr) && (fp != NULL)) {
+	    if (!set_bit_value(env, tptr,
+			       ptr+fp->e_offset,
+			       fp->b_offset, value))
+		return 0;
+	    return 1;
+	}
+    case SHT_FLT:
+    case SHT_CMPLX: {
 	double dval;
 	uint64_t uval;
 	int64_t ival;
@@ -1402,6 +2181,7 @@ static ERL_NIF_TERM share_setelement(ErlNifEnv* env, int argc, const ERL_NIF_TER
     share_object_t* obj;
     share_type_t* tptr;
     uint8_t* ptr;
+    sht_field_t* fp = NULL;
     
     if (!enif_get_resource(env, argv[0], object_r, (void**) &obj))
 	return enif_make_badarg(env);
@@ -1410,24 +2190,25 @@ static ERL_NIF_TERM share_setelement(ErlNifEnv* env, int argc, const ERL_NIF_TER
     ptr = obj->data;
     DEBUGF("setelement ptr=%x\r\n", ptr);
     
-    if (!get_path(env, argv[1], PATH_FLAG_RESIZE, tptr, &tptr, ptr, &ptr))
+    if (!get_path(env, argv[1], PATH_FLAG_RESIZE, tptr, &tptr, ptr, &ptr, &fp))
 	return enif_make_badarg(env);
 
     DEBUGF("setelement path %T points to type: %s, ptr=%x\r\n",
 	   argv[1], sht_type_name(tptr), ptr);
 
-    if (!set_value(env, tptr, ptr, argv[2]))
+    if (!set_value(env, tptr, ptr, fp, argv[2]))
 	return enif_make_badarg(env);
     return ATOM(ok);    
 }
 
-// FIXME handle return of full objects not only primitive elements
 static ERL_NIF_TERM share_element(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
+    ERL_NIF_TERM term;
     share_object_t* obj;
     share_type_t* tptr;
     uint8_t* ptr;
-
+    sht_field_t* fp = NULL;
+    
     if (!enif_get_resource(env, argv[0], object_r, (void**) &obj))
 	return enif_make_badarg(env);
     
@@ -1435,11 +2216,13 @@ static ERL_NIF_TERM share_element(ErlNifEnv* env, int argc, const ERL_NIF_TERM a
     tptr = obj->type;
     DEBUGF("element ptr=%x\r\n", ptr);
     
-    if (!get_path(env, argv[1], PATH_FLAG_NONE, tptr, &tptr, ptr, &ptr))
+    if (!get_path(env, argv[1], PATH_FLAG_NONE, tptr, &tptr, ptr, &ptr, &fp))
 	return enif_make_badarg(env);
     DEBUGF("element path %T points to type: %s, ptr=%x\r\n",
-	   argv[1], sht_type_name(tptr), ptr);    
-    return make_value(env, tptr, ptr);
+	   argv[1], sht_type_name(tptr), ptr);
+    if ((term = get_value(env, tptr, ptr, fp)) == 0)
+	return enif_make_badarg(env);
+    return term;
 }
 
 
@@ -1448,17 +2231,18 @@ static ERL_NIF_TERM share_size(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv
     share_object_t* obj;
     share_type_t* tptr;
     uint8_t* ptr;
-
+    sht_field_t* fp = NULL;
+    
     if (!enif_get_resource(env, argv[0], object_r, (void**) &obj))
 	return enif_make_badarg(env);
     tptr = obj->type;
     ptr = obj->data;
 
     if (argc == 2) {
-	if (!get_path(env, argv[1], PATH_FLAG_NONE, obj->type, &tptr, obj->data, &ptr))
+	if (!get_path(env, argv[1], PATH_FLAG_NONE, obj->type, &tptr, obj->data, &ptr, &fp))
 	    return enif_make_badarg(env);
     }
-    if (!sht_is_array(tptr))
+    if (!sht_is_array(*tptr))
 	return enif_make_badarg(env);
     else {
 	sht_array_t* sp = (sht_array_t*) tptr;
@@ -1495,16 +2279,17 @@ static ERL_NIF_TERM share_resize(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     share_type_t* tptr;
     uint8_t* ptr;
     size_t new_size;
+    sht_field_t* fp = NULL;
     
     if (!enif_get_resource(env, argv[0], object_r, (void**) &obj))
 	return enif_make_badarg(env);
     if (!get_path(env, argv[1], PATH_FLAG_NONE, obj->type,
-		  &tptr, obj->data, &ptr))
+		  &tptr, obj->data, &ptr, &fp))
 	return enif_make_badarg(env);
     if (!enif_get_ulong(env, argv[2], &new_size))
 	return enif_make_badarg(env);
     
-    if (!sht_is_array(tptr))
+    if (!sht_is_array(*tptr))
 	return enif_make_badarg(env);
     else {
 	sht_array_t* sp = (sht_array_t*) tptr;
@@ -1531,13 +2316,86 @@ static ERL_NIF_TERM share_sizeof(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
     
     if (enif_get_resource(env, argv[0], type_r, &obj)) {
 	share_type_t* tptr = (share_type_t*) obj;
-	size_t size = sht_sizeof(tptr);
+	size_t size;
+	sht_field_t* fp = NULL;
+	
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);
+	}
+	size = sht_sizeof(tptr);
 	if (size == 0)
 	    return enif_make_badarg(env);
+	return enif_make_ulong(env, size);
+    }
+    else if (enif_get_resource(env, argv[0], object_r, &obj)) {
+	share_object_t* optr = (share_object_t*) obj;
+	share_type_t* tptr = optr->type;
+	size_t size;
+	sht_field_t* fp = NULL;
+	
 	if (argc == 2) {
-	    // path not supported for types
+	    uint8_t* ptr = optr->data;
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);
+	}
+	size = sht_sizeof(tptr);
+	if (size == 0)
+	    return enif_make_badarg(env);
+	return enif_make_ulong(env, size);	
+    }
+    else {
+	share_type_t* tptr;
+	size_t size;
+	DYN_BUILD_FIXED(dt);
+	
+	if (!build_type(env, argv[0], &dt)) {
+	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
+
+	tptr = (share_type_t*) dt.base;
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;	    
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);	    
+	}
+	if ((size = sht_sizeof(tptr)) == 0) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	dyn_build_clean(&dt);
+	return enif_make_ulong(env, size);
+    }
+}
+
+// calculate memory size of data type in bits
+// sizeof(Object) = sht_sizeof(Object->ype)
+// sizeof(Type) = sht_sizeof(type)
+// sizeof(Term) = size_of_type(Term)
+static ERL_NIF_TERM share_bitsizeof(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    void* obj;
+    
+    if (enif_get_resource(env, argv[0], type_r, &obj)) {
+	share_type_t* tptr = (share_type_t*) obj;
+	size_t size;
+	
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;	    
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);
+	}
+	size = sht_bitsizeof(tptr);
+	if (size == 0)
+	    return enif_make_badarg(env);
 	return enif_make_ulong(env, size);
     }
     else if (enif_get_resource(env, argv[0], object_r, &obj)) {
@@ -1547,35 +2405,37 @@ static ERL_NIF_TERM share_sizeof(ErlNifEnv* env, int argc, const ERL_NIF_TERM ar
 	
 	if (argc == 2) {
 	    uint8_t* ptr = optr->data;
+	    sht_field_t* fp = NULL;	    
 	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
-			  tptr, &tptr, ptr, &ptr))
+			  tptr, &tptr, ptr, &ptr, &fp))
 		return enif_make_badarg(env);
 	}
-	size = sht_sizeof(tptr);
+	size = sht_bitsizeof(tptr);
 	if (size == 0)
 	    return enif_make_badarg(env);
 	return enif_make_ulong(env, size);	
     }
     else {
-	dyn_build_t dt;
-	share_type_t fixed[FIXED_SIZE];
+	share_type_t* tptr;
 	size_t size;
+	DYN_BUILD_FIXED(dt);
 	
-	if (argc == 2) {
-	    // path not supported for types specs
-	    return enif_make_badarg(env);
-	}
+	
 
-	dt.alloc = 0;
-	dt.size = dt.size0 = FIXED_SIZE;
-	dt.base = dt.base0 = fixed;
-	dt.cur  = 0;
-
-	if (!build_type(env, argv[0], false, &dt)) {
+	if (!build_type(env, argv[0], &dt)) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
-	if ((size = sht_sizeof((share_type_t*) dt.base)) == 0) {
+
+	tptr = (share_type_t*) dt.base;
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;	    
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);	    
+	}
+	if ((size = sht_bitsizeof(tptr)) == 0) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
@@ -1593,9 +2453,9 @@ static ERL_NIF_TERM share_offsetof(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
 	share_type_t* tptr = optr->type;
 	uint8_t* ptr = optr->data;
 	size_t offset;
-
+	sht_field_t* fp = NULL;
 	if (!get_path(env, argv[1], PATH_FLAG_NONE,
-		      tptr, &tptr, ptr, &ptr))
+		      tptr, &tptr, ptr, &ptr, &fp))
 	    return enif_make_badarg(env);
 	offset = ptr - optr->data;
 	return enif_make_ulong(env, offset);
@@ -1603,32 +2463,27 @@ static ERL_NIF_TERM share_offsetof(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     else if (enif_get_resource(env, argv[0], type_r, &obj)) {
 	share_type_t* tptr = (share_type_t*) obj;
 	uint8_t* ptr = NULL;
-	
+	sht_field_t* fp = NULL;	
 	if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-		      tptr, &tptr, ptr, &ptr))
+		      tptr, &tptr, ptr, &ptr, &fp))
 	    return enif_make_badarg(env);
 	return enif_make_ulong(env, (size_t) ptr); 
     }    
     else {
 	share_type_t* tptr;
 	uint8_t* ptr;
-	dyn_build_t dt;
-	share_type_t fixed[FIXED_SIZE];
-	
-	dt.alloc = 0;
-	dt.size = dt.size0 = FIXED_SIZE;
-	dt.base = dt.base0 = fixed;
-	dt.cur  = 0;
+	sht_field_t* fp = NULL;    	
+	DYN_BUILD_FIXED(dt);
 
-	if (!build_type(env, argv[0], false, &dt)) {
+	if (!build_type(env, argv[0], &dt)) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
 	tptr = (share_type_t*) dt.base;
 	ptr = NULL;
-    
+
 	if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-		      tptr, &tptr, ptr, &ptr)) {
+		      tptr, &tptr, ptr, &ptr, &fp)) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
@@ -1636,59 +2491,121 @@ static ERL_NIF_TERM share_offsetof(ErlNifEnv* env, int argc, const ERL_NIF_TERM 
     }    
 }
 
+static ERL_NIF_TERM share_bitoffsetof(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    void* obj;
+    
+    if (enif_get_resource(env, argv[0], object_r, &obj)) {
+	share_object_t* optr = (share_object_t*) obj;
+	share_type_t* tptr = optr->type;
+	uint8_t* ptr = optr->data;
+	size_t offset;
+	sht_field_t* fp = NULL;
+	if (!get_path(env, argv[1], PATH_FLAG_NONE,
+		      tptr, &tptr, ptr, &ptr, &fp))
+	    return enif_make_badarg(env);
+	offset = 8*(ptr - optr->data);
+	if (fp != NULL)
+	    offset += fp->b_offset;
+	return enif_make_ulong(env, offset);
+    }
+    else if (enif_get_resource(env, argv[0], type_r, &obj)) {
+	share_type_t* tptr = (share_type_t*) obj;
+	uint8_t* ptr = NULL;
+	sht_field_t* fp = NULL;
+	size_t offset;
+	
+	if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
+		      tptr, &tptr, ptr, &ptr, &fp))
+	    return enif_make_badarg(env);
+	offset =  8*((size_t) ptr);
+	if (fp != NULL)
+	    offset += fp->b_offset;
+	return enif_make_ulong(env,offset); 
+    }    
+    else {
+	share_type_t* tptr;
+	uint8_t* ptr;
+	sht_field_t* fp = NULL;
+	size_t offset;	
+	DYN_BUILD_FIXED(dt);
+
+	if (!build_type(env, argv[0], &dt)) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	tptr = (share_type_t*) dt.base;
+	ptr = NULL;	
+	if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
+		      tptr, &tptr, ptr, &ptr, &fp)) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	offset = 8*((size_t) ptr);
+	if (fp != NULL)
+	    offset += fp->b_offset;	
+	return enif_make_ulong(env, offset); 	
+    }
+}
+
 // return the term type of object or type-object
 static ERL_NIF_TERM share_typeof(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
 {
     void* obj;
+    ERL_NIF_TERM term;
     
     if (enif_get_resource(env, argv[0], type_r, &obj)) {
 	share_type_t* tptr = (share_type_t*) obj;
 	if (argc == 2) {
 	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-			  tptr, &tptr, ptr, &ptr))
+			  tptr, &tptr, ptr, &ptr, &fp))
 		return enif_make_badarg(env);
 	}
-	return sht_typeof(env, tptr);
+	if ((term = sht_typeof(env, tptr)) == 0)
+	    return enif_make_badarg(env);
+       	return term;
     }
     else if (enif_get_resource(env, argv[0], object_r, &obj)) {
 	share_object_t* optr = (share_object_t*) obj;
 	share_type_t* tptr = optr->type;
 	if (argc == 2) {
 	    uint8_t* ptr = optr->data;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
-			  tptr, &tptr, ptr, &ptr))
+			  tptr, &tptr, ptr, &ptr,&fp))
 		return enif_make_badarg(env);
 	}
-	return sht_typeof(env, tptr);
+	if ((term = sht_typeof(env, tptr)) == 0)
+	    return enif_make_badarg(env);
+       	return term;
     }
     else {
-	dyn_build_t dt;
-	share_type_t fixed[FIXED_SIZE];
+	DYN_BUILD_FIXED(dt);
 	share_type_t* tptr;
 	ERL_NIF_TERM term;
 	
-	dt.alloc = 0;
-	dt.size = dt.size0 = FIXED_SIZE;
-	dt.base = dt.base0 = fixed;
-	dt.cur  = 0;
-
-	if (!build_type(env, argv[0], false, &dt)) {
+	if (!build_type(env, argv[0], &dt)) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
 	tptr = (share_type_t*) dt.base;
 	if (argc == 2) {
 	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-			  tptr, &tptr, ptr, &ptr)) {
+			  tptr, &tptr, ptr, &ptr,&fp)) {
 		dyn_build_clean(&dt);
 		return enif_make_badarg(env);
 	    }
 	}
-	term = sht_typeof(env, tptr);
-	dyn_build_clean(&dt);
-	return term;
+	if ((term = sht_typeof(env, tptr)) == 0) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	dyn_build_clean(&dt);	
+       	return term;
     }
 }
 
@@ -1702,18 +2619,22 @@ static ERL_NIF_TERM share_alignment(ErlNifEnv* env, int argc, const ERL_NIF_TERM
 	share_type_t* tptr = optr->type;
 	if (argc == 2) {
 	    uint8_t* ptr = optr->data;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
-			  tptr, &tptr, ptr, &ptr))
+			  tptr, &tptr, ptr, &ptr, &fp))
 		return enif_make_badarg(env);
 	}
-	return sht_typeof(env, tptr);
+	if ((align = sht_align(tptr)) == 0)
+	    return enif_make_badarg(env);
+	return enif_make_ulong(env, align);	
     }
     else if (enif_get_resource(env, argv[0], type_r, &obj)) {
 	share_type_t* tptr = (share_type_t*) obj;
 	if (argc == 2) {
 	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-			  tptr, &tptr, ptr, &ptr))
+			  tptr, &tptr, ptr, &ptr, &fp))
 		return enif_make_badarg(env);
 	}
 	if ((align = sht_align(tptr)) == 0)
@@ -1721,28 +2642,83 @@ static ERL_NIF_TERM share_alignment(ErlNifEnv* env, int argc, const ERL_NIF_TERM
 	return enif_make_ulong(env, align);
     }
     else {
-	dyn_build_t dt;
-	share_type_t fixed[FIXED_SIZE];
+	DYN_BUILD_FIXED(dt);
 	share_type_t* tptr;
-	dt.alloc = 0;
-	dt.size = dt.size0 = FIXED_SIZE;
-	dt.base = dt.base0 = fixed;
-	dt.cur  = 0;
 
-	if (!build_type(env, argv[0], false, &dt)) {
+	if (!build_type(env, argv[0], &dt)) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
 	tptr = (share_type_t*) dt.base;
 	if (argc == 2) {
 	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
 	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
-			  tptr, &tptr, ptr, &ptr)) {
+			  tptr, &tptr, ptr, &ptr, &fp)) {
 		dyn_build_clean(&dt);
 		return enif_make_badarg(env);
 	    }
 	}
 	if ((align = sht_align(tptr)) == 0) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	dyn_build_clean(&dt);
+	return enif_make_ulong(env, align);
+    }
+}
+
+static ERL_NIF_TERM share_bitalignment(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
+{
+    void* obj;
+    size_t align;
+
+    if (enif_get_resource(env, argv[0], object_r, &obj)) {
+	share_object_t* optr = (share_object_t*) obj;
+	share_type_t* tptr = optr->type;
+	if (argc == 2) {
+	    uint8_t* ptr = optr->data;
+	    sht_field_t* fp = NULL;	    
+	    if (!get_path(env, argv[1], PATH_FLAG_NONE,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);
+	}
+	if ((align = sht_bitalign(tptr)) == 0)
+	    return enif_make_badarg(env);
+	return enif_make_ulong(env, align);
+    }
+    else if (enif_get_resource(env, argv[0], type_r, &obj)) {
+	share_type_t* tptr = (share_type_t*) obj;
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
+	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
+			  tptr, &tptr, ptr, &ptr, &fp))
+		return enif_make_badarg(env);
+	}
+	if ((align = sht_bitalign(tptr)) == 0)
+	    return enif_make_badarg(env);
+	return enif_make_ulong(env, align);
+    }
+    else {
+	DYN_BUILD_FIXED(dt);
+	share_type_t* tptr;
+
+	if (!build_type(env, argv[0], &dt)) {
+	    dyn_build_clean(&dt);
+	    return enif_make_badarg(env);
+	}
+	tptr = (share_type_t*) dt.base;
+	if (argc == 2) {
+	    uint8_t* ptr = NULL;
+	    sht_field_t* fp = NULL;
+	    if (!get_path(env, argv[1], PATH_FLAG_OFFSET,
+			  tptr, &tptr, ptr, &ptr, &fp)) {
+		dyn_build_clean(&dt);
+		return enif_make_badarg(env);
+	    }
+	}
+	if ((align = sht_bitalign(tptr)) == 0) {
 	    dyn_build_clean(&dt);
 	    return enif_make_badarg(env);
 	}
@@ -1830,6 +2806,9 @@ static int load_atoms(ErlNifEnv* env)
     LOAD_ATOM(element);
     LOAD_ATOM(setelement);
 
+    LOAD_ATOM(volatile);
+    LOAD_ATOM(unsigned);
+    LOAD_ATOM(signed);
     // unsigned types
     LOAD_ATOM(uint);
     LOAD_ATOM(uchar);
@@ -1879,6 +2858,7 @@ static int load_atoms(ErlNifEnv* env)
     // structured types
     LOAD_ATOM(array);
     LOAD_ATOM(struct);
+    LOAD_ATOM(union);    
 
     // array options
     LOAD_ATOM(rowmajor);
@@ -1886,6 +2866,8 @@ static int load_atoms(ErlNifEnv* env)
     LOAD_ATOM(stride);
     LOAD_ATOM(alignment);
     LOAD_ATOM(offset);
+
+    LOAD_ATOM(_);
     
     return 0;
 }
@@ -1915,7 +2897,7 @@ void clean_object(share_object_t* obj)
     share_type_t* tptr = obj->type;
     uint8_t* ptr = obj->data;
 
-    if (sht_is_array(tptr)) {
+    if (sht_is_array(*tptr)) {
 	sht_array_t* sp = (sht_array_t*) tptr;
 	if (sp->size == 0) {
 	    share_array_t** app = (share_array_t**) ptr;
@@ -2002,6 +2984,8 @@ static int share_load(ErlNifEnv* env, void** priv_data, ERL_NIF_TERM load_info)
     memset(ctx, 0, sizeof(nif_ctx_t));
     if (load_atoms(env) < 0)
 	return -1;
+    if (!init_type0())
+	return -1;
     *priv_data = ctx;
     return 0;
 }
@@ -2051,6 +3035,8 @@ static int share_upgrade(ErlNifEnv* env, void** priv_data,
 	return -1;
     }    
     if (load_atoms(env) < 0)
+	return -1;
+    if (!init_type0())
 	return -1;
     *priv_data = *old_priv_data;
     return 0;

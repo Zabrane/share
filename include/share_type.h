@@ -20,39 +20,46 @@ typedef enum
 } bool_t;
 
 // base types
-#define SHT_NONE       0x0000  // 0000 0000
-#define SHT_UNSIGNED   0x0000  // 0000 xxxx
-#define SHT_SIGNED     0x0010  // 0001 xxxx
-#define SHT_INTEGER    0x0020  // 0010 xxxx
-#define SHT_FLT        0x0040  // 0100 xxxx
-#define SHT_CMPL       0x0080  // 1000 xxxx    
-#define SHT_SIZE_8     0x0003  // tttt 0003  // 2^3
-#define SHT_SIZE_16    0x0004  // tttt 0004  // 2^4
-#define SHT_SIZE_32    0x0005  // tttt 0005  // 2^5
-#define SHT_SIZE_64    0x0006  // tttt 0006  // 2^6
-#define SHT_SIZE_128   0x0007  // tttt 0007  // 2^7
-#define SHT_UINT8      SHT_UNSIGNED+SHT_INTEGER+SHT_SIZE_8
-#define SHT_UINT16     SHT_UNSIGNED+SHT_INTEGER+SHT_SIZE_16
-#define SHT_UINT32     SHT_UNSIGNED+SHT_INTEGER+SHT_SIZE_32
-#define SHT_UINT64     SHT_UNSIGNED+SHT_INTEGER+SHT_SIZE_64
-#define SHT_UINT128    SHT_UNSIGNED+SHT_INTEGER+SHT_SIZE_128
-#define SHT_INT8       SHT_SIGNED+SHT_INTEGER+SHT_SIZE_8
-#define SHT_INT16      SHT_SIGNED+SHT_INTEGER+SHT_SIZE_16
-#define SHT_INT32      SHT_SIGNED+SHT_INTEGER+SHT_SIZE_32
-#define SHT_INT64      SHT_SIGNED+SHT_INTEGER+SHT_SIZE_64
-#define SHT_INT128     SHT_SIGNED+SHT_INTEGER+SHT_SIZE_128
-#define SHT_FLOAT16    SHT_SIGNED+SHT_FLT+SHT_SIZE_16
-#define SHT_FLOAT32    SHT_SIGNED+SHT_FLT+SHT_SIZE_32
-#define SHT_FLOAT64    SHT_SIGNED+SHT_FLT+SHT_SIZE_64
-#define SHT_FLOAT128   SHT_SIGNED+SHT_FLT+SHT_SIZE_128
-// all both float-complex and integer-complex?
-#define SHT_COMPLEX64  SHT_SIGNED+SHT_CMPL+SHT_SIZE_64
-#define SHT_COMPLEX128 SHT_SIGNED+SHT_CMPL+SHT_SIZE_128
-#define SHT_ATM        0x0100   // ERL_NIF_TERM (atom)
-#define SHT_ARRAY      0x1000   // share_array_t
-#define SHT_STRUCT     0x2000   // share_struct_t
+#define SHT_NONE       0x000000
+#define SHT_TYPE       0x00000f  // type mask
+#define SHT_UNSIGNED   0x000001  // 0001  integer unsigned
+#define SHT_SIGNED     0x000003  // 0011  integer signed
+#define SHT_FLT        0x000004  // 0100  float
+#define SHT_CMPLX      0x000005  // 0111  complex
+#define SHT_ATM        0x000008  // 1000
+#define SHT_ARRAY      0x000009  // 1001 share_array_t
+#define SHT_STRUCT     0x00000A  // 1010 share_struct_t
+#define SHT_UNION      0x00000B  // 1011 share_union_t
+// common sizes
+#define SHT_SIZE_MASK  0x000ff0  // base size mask
+#define SHT_FIELD_MASK 0x0ff000  // bitfield mask
+#define SHT_BITFIELD   0x100000  // bitfield flag
+#define SHT_VOLATILE   0x200000  // volatile flag
+#define SHT_SIZE_8     0x000080
+#define SHT_SIZE_16    0x000100
+#define SHT_SIZE_32    0x000200
+#define SHT_SIZE_64    0x000400
+#define SHT_SIZE_128   0x000800
+#define SHT_UINT8      (SHT_UNSIGNED+SHT_SIZE_8)
+#define SHT_UINT16     (SHT_UNSIGNED+SHT_SIZE_16)
+#define SHT_UINT32     (SHT_UNSIGNED+SHT_SIZE_32)
+#define SHT_UINT64     (SHT_UNSIGNED+SHT_SIZE_64)
+#define SHT_UINT128    (SHT_UNSIGNED+SHT_SIZE_128)
+#define SHT_INT8       (SHT_SIGNED+SHT_SIZE_8)
+#define SHT_INT16      (SHT_SIGNED+SHT_SIZE_16)
+#define SHT_INT32      (SHT_SIGNED+SHT_SIZE_32)
+#define SHT_INT64      (SHT_SIGNED+SHT_SIZE_64)
+#define SHT_INT128     (SHT_SIGNED+SHT_SIZE_128)
+#define SHT_FLOAT16    (SHT_FLT+SHT_SIZE_16)
+#define SHT_FLOAT32    (SHT_FLT+SHT_SIZE_32)
+#define SHT_FLOAT64    (SHT_FLT+SHT_SIZE_64)
+#define SHT_FLOAT128   (SHT_FLT+SHT_SIZE_128)
+#define SHT_COMPLEX64  (SHT_CMPLX+SHT_SIZE_64)
+#define SHT_COMPLEX128 (SHT_CMPLX+SHT_SIZE_128)
 
-#define SHT_CHAR SHT_INT8
+#define SHT_COMPLEX SHT_COMPLEX128
+
+#define SHT_CHAR  SHT_INT8
 #define SHT_UCHAR SHT_UINT8
 
 #if __SIZEOF_SHORT__ == 2
@@ -80,6 +87,16 @@ typedef enum
 #define SHT_ULONG SHT_UINT64
 #else
 #error "Unsupported size of SHT_LONG"
+#endif
+
+#if __SIZEOF_LONG_LONG__ == 8
+#define SHT_LONG_LONG SHT_INT64
+#define SHT_ULONG_LONG SHT_UINT64
+#elif __SIZEOF_LONG__ == 16
+#define SHT_LONG_LONG SHT_INT128
+#define SHT_ULONG_LONG SHT_UINT128
+#else
+#error "Unsupported size of SHT_LONG_LONG"
 #endif
 
 #if __SIZEOF_SIZE_T__ == 4
@@ -133,7 +150,8 @@ typedef struct
 {
     share_atom_t name;      // atom field name
     share_size_t t_offset;  // offset (in words) element type
-    share_size_t e_offset;  // offset (in bytes) element data
+    share_size_t e_offset;  // byte_offset to element word
+    share_size_t b_offset;  // bit_offset with in word 
     share_type_t spec[];    // spec + t_offset is location of type
 } sht_field_t;
 
@@ -146,6 +164,16 @@ typedef struct
     share_type_t alignment;  // (max) alignment of elements
     sht_field_t  spec[0];    // n fields
 } sht_struct_t;
+
+typedef struct
+{
+    share_type_t type;       // SHT_UNION
+    share_size_t n;          // declared number of fields    
+    share_type_t t_size;     // size (in words) of all field type specs
+    share_type_t e_size;     // (max) size (in bytes) of union elements
+    share_type_t alignment;  // (max) alignment of elements
+    sht_field_t  spec[0];    // n fields
+} sht_union_t;
 
 // resource object (object_r)
 typedef struct
@@ -162,19 +190,31 @@ typedef struct
     uint8_t data[];
 } share_array_t;
 
-#define sht_bit_size(t)     (1 << ((t) & 0xf))
-#define sht_byte_size(t)    (1 << (((t) & 0xf)-3))
-#define nsht_byte_size(t,n) ((n) << (((t) & 0xf)-3))
-#define sht_is_integer(t)   (((t) & SHT_INTEGER) == SHT_INTEGER)
-#define sht_is_signed(t)    (((t) & SHT_SIGNED) == SHT_SIGNED)
-#define sht_is_float(t)     (((t) & 0xf0) == SHT_FLT)
-#define sht_is_complex(t)   (((t) & 0xf0) == SHT_CMPL)
-#define sht_is_number(t)    (((t) & 0xff00) == 0x0000)
-#define sht_is_atom(t)      ((t) == SHT_ATM)
-#define sht_is_scalar(t)    (sht_is_number((t)) || sht_is_atom((t)))
+#define sht_type(t)        ((t) & SHT_TYPE)
+#define sht_is_unsigned(t) (sht_type((t)) == SHT_UNSIGNED)
+#define sht_is_signed(t)   (sht_type((t)) == SHT_SIGNED)
+#define sht_is_integer(t)  (sht_type((t)) <= SHT_SIGNED)
+#define sht_is_bitfield(t) (((t) & SHT_BITFIELD) != 0)
+#define sht_is_float(t)    (sht_type((t)) == SHT_FLT)
+#define sht_is_complex(t)  (sht_type((t)) == SHT_CMPLX)
+#define sht_is_number(t)   (sht_type((t)) < SHT_ATM)
+#define sht_is_atom(t)     (sht_type((t)) == SHT_ATM)
 
-#define sht_is_array(tp)   (*((share_type_t*) (tp)) == SHT_ARRAY)
-#define sht_is_struct(tp)  (*((share_type_t*) (tp)) == SHT_STRUCT)
+// for number types
+#define sht_bitsize(t)         (((t) & SHT_SIZE_MASK) >> 4)
+#define sht_bytesize(t)        ((sht_bitsize((t))+7) >> 3)
+#define sht_bitfieldsize(t)    (((t) & SHT_FIELD_MASK) >> 12)
+#define sht_make_bitfield(t,n) (SHT_BITFIELD | ((n) << 12) | (t))
+// structure types
+#define sht_is_array(t)   (sht_type((t)) == SHT_ARRAY)
+#define sht_is_struct(t)  (sht_type((t)) == SHT_STRUCT)
+#define sht_is_union(t)   (sht_type((t)) == SHT_UNION)
+
+// set some fields
+#define sht_set_type(t, ty) (((t) & ~SHT_TYPE) | ((ty) & SHT_TYPE))
+#define sht_set_bitsize(t, sz) (((t) & ~SHT_SIZE_MASK) | (((sz)<<4) & SHT_SIZE_MASK))
+#define sht_set_bitfieldsize(t, sz) (((t) & ~SHT_FIELD_MASK) | (((sz)<<12) & SHT_FIELD_MASK))
+#define sht_set_volatile(t) ((t) | SHT_VOLATILE)
 
 typedef struct
 {

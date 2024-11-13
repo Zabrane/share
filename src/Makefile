@@ -20,6 +20,9 @@ APP_TARGET=../ebin/$(APP).app
 
 all: $(APP_TARGET) $(ALL_OBJECTS)
 
+debug: CFLAGS += -Ddebug -DDEBUG
+debug: all
+
 clean:
 	rm -f $(ALL_OBJECTS) *.core .*.d
 

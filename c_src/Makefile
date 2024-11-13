@@ -8,13 +8,19 @@ CC=gcc
 CFLAGS+= -Wall -O3
 LDFLAGS+=-shared
 
-OBJS = 
+OBJS = share_nif.o share.o
 LIBS = 
 
 all: ../priv/share_nif.so
 
-../priv/share_nif.so: share_nif.o share.o
-	$(CC) $(LDFLAGS) share.o share_nif.o -o ../priv/share_nif.so
+debug: CFLAGS += -Ddebug -DDEBUG
+debug: all
+
+../priv/share_nif.so: $(OBJS)
+	$(CC) $(LDFLAGS) $(OBJS) -o ../priv/share_nif.so
+
+clean:
+	rm -f $(OBJS) *.core .*.d
 
 %.o:	%.c
 	$(CC) $(CFLAGS) -c -fPIC $<
