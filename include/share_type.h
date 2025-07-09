@@ -215,6 +215,7 @@ typedef struct
 #define sht_set_bitsize(t, sz) (((t) & ~SHT_SIZE_MASK) | (((sz)<<4) & SHT_SIZE_MASK))
 #define sht_set_bitfieldsize(t, sz) (((t) & ~SHT_FIELD_MASK) | (((sz)<<12) & SHT_FIELD_MASK))
 #define sht_set_volatile(t) ((t) | SHT_VOLATILE)
+#define sht_set_bitfield(t) ((t) | SHT_BITFIELD)
 
 typedef struct
 {

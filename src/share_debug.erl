@@ -12,22 +12,24 @@
 -export([decode_obj/1, decode_obj/2, decode_obj/3]).
 -export([debug_type/2, debug_object/2]).
 
--define(SHT_UNSIGNED,   16#00001).
--define(SHT_SIGNED,     16#00003).
--define(SHT_FLT,        16#00004).
--define(SHT_CMPLX,      16#00005).
--define(SHT_ATM,        16#00008).
--define(SHT_ARRAY,      16#00009).   %% share_array_t
--define(SHT_STRUCT,     16#0000A).   %% share_struct_t
--define(SHT_UNION,      16#0000B).   %% share_union_t
+-define(SHT_UNSIGNED,   16#000001).
+-define(SHT_SIGNED,     16#000003).
+-define(SHT_FLT,        16#000004).
+-define(SHT_CMPLX,      16#000005).
+-define(SHT_ATM,        16#000008).
+-define(SHT_ARRAY,      16#000009).   %% share_array_t
+-define(SHT_STRUCT,     16#00000A).   %% share_struct_t
+-define(SHT_UNION,      16#00000B).   %% share_union_t
 
--define(SHT_SIZE_MASK,  16#00FF0).
--define(SHT_FIELD_MASK, 16#FF000).
--define(SHT_SIZE_8,     16#00080).
--define(SHT_SIZE_16,    16#00100).
--define(SHT_SIZE_32,    16#00200).
--define(SHT_SIZE_64,    16#00400).
--define(SHT_SIZE_128,   16#00800).
+-define(SHT_SIZE_MASK,  16#000FF0).
+-define(SHT_FIELD_MASK, 16#0FF000).
+-define(SHT_BITFIELD,   16#100000).  %% bitfield flag
+-define(SHT_VOLATILE,   16#200000).  %% volatile flag
+-define(SHT_SIZE_8,     16#000080).
+-define(SHT_SIZE_16,    16#000100).
+-define(SHT_SIZE_32,    16#000200).
+-define(SHT_SIZE_64,    16#000400).
+-define(SHT_SIZE_128,   16#000800).
 
 -define(SHT_UINT8,      (?SHT_UNSIGNED+?SHT_SIZE_8)).
 -define(SHT_UINT16,     (?SHT_UNSIGNED+?SHT_SIZE_16)).
@@ -94,7 +96,11 @@ decode_type_([?SHT_FLOAT32|Spec]) -> {float32_t,Spec};
 decode_type_([?SHT_FLOAT64|Spec]) -> {float64_t,Spec};
 decode_type_([?SHT_COMPLEX64|Spec]) -> {complex64_t,Spec};
 decode_type_([?SHT_COMPLEX128|Spec]) -> {complex128_t,Spec};
-decode_type_([?SHT_ATM|Spec]) -> {atm,Spec}.
+decode_type_([?SHT_ATM|Spec]) -> {atm,Spec};
+decode_type_([Type|Spec]) when Type band ?SHT_BITFIELD =/= 0 ->
+    N = (Type band ?SHT_FIELD_MASK) bsr 12,
+    {T, Spec1} = decode_type_([(Type band 16#fff)|Spec]),
+    {{T, N}, Spec1}.
 
 %% decode_array_shape(Dim,Spec) ->
 %%    decode_array_shape(Dim,[],[],Spec).
@@ -109,17 +115,19 @@ decode_array_shape(Dim,Size,Stride,Align,
 
 %% first pass unpack the fields, decode name
 decode_fields_(0, Spec, Offs, Acc) ->
-    decode_fields__(lists:reverse(Acc), Offs, Spec, []);
-decode_fields_(I, [Atm,TOffs,_EOffs|Spec], Offs, Acc) ->
+    resolve_fields__(lists:reverse(Acc), Offs, Spec, []);
+decode_fields_(I, [Atm,TOffs,ByteOffs,BitOffs|Spec], Offs, Acc) ->
     Name = share:info(Atm),
-    decode_fields_(I-1, Spec, Offs+3, [{Name,Offs+3+TOffs}|Acc]).
+    decode_fields_(I-1, Spec, Offs+4, 
+		   [{Name,Offs+4+TOffs,ByteOffs,BitOffs}|Acc]).
 
 %% second pass decode the actual value types
-decode_fields__([{Name,Offs}|Fields], Offs, Spec, Acc) ->
+resolve_fields__([{Name,Offs,ByteOffs,BitOffs}|Fields], Offs, Spec, Acc) ->
     {Type,Spec1} = decode_type_(Spec),
     N = length(Spec) - length(Spec1),
-    decode_fields__(Fields, Offs+N, Spec1, [{Name,Type}|Acc]);
-decode_fields__([], _TOffs, Spec, Acc) ->
+    resolve_fields__(Fields, Offs+N, Spec1, 
+		     [{Name,[{offs,BitOffs},{boffs,ByteOffs},Type]}|Acc]);
+resolve_fields__([], _TOffs, Spec, Acc) ->
     {lists:reverse(Acc), Spec}.
 
 

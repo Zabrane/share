@@ -148,6 +148,14 @@ test_c_bitfield() ->
 				 {d,{uchar,3}},
 				 {e,{uchar,3}}]}).
 
+%% gcc packed data
+%% 
+%% little endian:
+%%    FEDCBA98 76543210
+%%   -------------------
+%%   |-xxxxxxx|zzzzyyyy|   MEMORY
+%%   |zzzzyyyy|-xxxxxxx|   REG
+%%  
 test_bitfield_0() -> 
     %% 15 bits backed in 2 bytes
     Type = {struct, [{x,{short,7}},
@@ -159,10 +167,19 @@ test_bitfield_0() ->
     io:format("Type1 = ~p~n", [Type1]),
 
     X1 = share:new(T1),
-    share:setelement(X1, [], [1,2,3]),
-    [1,2,3] = share:element(X1, []),
-    ok.
+    Value1 = [1,2,3],
+    share:setelement(X1, [], Value1),
+    Value1 = share:element(X1, []),
+    ok = test_c_interaction(Type, Value1).
 
+%% gcc packed data
+%% 
+%% little endian:
+%%   FEDCB A987 6543210
+%%   ------------------
+%%   |yyyyxxxx|-zzzzzzz|   MEMORY
+%%   |-zzzzzzz|yyyyxxxx|   REG
+%%
 test_bitfield_1() -> 
     %% 15 bits backed 2 bytes
     Type = {struct, [{x,{char,4}},
@@ -176,8 +193,29 @@ test_bitfield_1() ->
     X1 = share:new(T),
     Value1 =  [1,2,3],
     share:setelement(X1, [], Value1),
-    [1,2,3] = share:element(X1, []),
-    ok.
+    Value1 = share:element(X1, []),
+    ok = test_c_interaction(Type, Value1).
+
+field_info(TypeRef, Name) ->
+    {Name, [{offset,share:bitoffsetof(TypeRef, [Name])},
+	    {alignment,share:bitalignment(TypeRef,[Name])}]}.
+
+bitfield_2_nopack() ->
+    Type = {struct, [nopack,
+		     {x,{char,7}},
+		     {y,{char,3}},
+		     {z,{short,3}}]},
+    T = share:new_type(Type),
+    {share:typeof(T),[field_info(T, x), field_info(T, y), field_info(T, z)]}.
+
+bitfield_2_pack() ->
+    Type = {struct, [pack,
+		     {x,{char,7}},
+		     {y,{char,3}},
+		     {z,{short,3}}]},
+    T = share:new_type(Type),
+    {share:typeof(T),[field_info(T, x), field_info(T, y), field_info(T, z)]}.
+     
 
 test_bitfield_2() -> 
     %% 13 bits backed 2 bytes
@@ -192,10 +230,8 @@ test_bitfield_2() ->
     X1 = share:new(T),
     Value1 =  [53,-4,1],
     share:setelement(X1, [], Value1),
-    [53,-4,1] = share:element(X1, []),
-
-    ok = test_c_interaction(Type).
-
+    Value1 = share:element(X1, []),
+    ok = test_c_interaction(Type, Value1).
 
 
 test_bitfield_uint32_0() -> 
@@ -257,6 +293,66 @@ test_bitfield_t4() ->
 			     {c,{uint,5}},
 			     {d,{uint,5}}]}).
 
+test_bitfield_t5() ->
+    share:new_type({struct, [{x,char},
+			     {'_',{uint8,0}},
+			     {y,char}]}).
+
+test_bitfield_t6() ->
+    share:new_type({struct, [{x,char},
+			     {'_',{uint32,0}},
+			     {y,char}]}).
+
+
+%% test bitfields x,y where bitsize sum == 16
+test_bitfield_eq_16_2() ->
+    [begin
+	 Type = {struct, [{x,{short,X}}, 
+		       {y,{short,Y}}]},
+	 test_c_interaction(Type)
+     end ||
+	X <- lists:seq(1,16), 
+	Y <- lists:seq(1,16), 
+	X+Y == 16].
+
+test_bitfield_lte_16_2() ->
+    [begin
+	 Type = {struct, [{x,{short,X}}, 
+		       {y,{short,Y}}]},
+	 test_c_interaction(Type)
+     end ||
+	X <- lists:seq(1,16), 
+	Y <- lists:seq(1,16), 
+	X+Y =< 16].
+
+
+%% test bitfields x,y,z whete bitsize sum to 16
+test_bitfield_eq_16_3() ->
+    [begin
+	 Type = {struct, [{x,{short,X}}, 
+			  {y,{short,Y}},
+			  {z,{short,Z}}
+			 ]},
+	 test_c_interaction(Type)
+     end ||
+	X <- lists:seq(1,16), 
+	Y <- lists:seq(1,16), 
+	Z <- lists:seq(1,16), 
+	X+Y+Z == 16].
+
+test_bitfield_lte_16_3() ->
+    [begin
+	 Type = {struct, [{x,{short,X}}, 
+			  {y,{short,Y}},
+			  {z,{short,Z}}
+			 ]},
+	 test_c_interaction(Type)
+     end ||
+	X <- lists:seq(1,16), 
+	Y <- lists:seq(1,16), 
+	Z <- lists:seq(1,16), 
+	X+Y+Z =< 16].
+    
 %% struct BoxProps {
 %%     unsigned int  opaque       : 1;
 %%     unsigned int  fill_color   : 3;
@@ -288,26 +384,26 @@ test_bitfield_pack_box_props() ->
 
     
 test_bitfield() -> 
-    %% unsigned short a : 3, b : 3, c : 3, d : 3, e : 3;
-    %% 15 bits backed in short = 2 bytes
     T1 = test_bitfield_t1(),
+    2 = share:sizeof(T1),
     
-    %% unsigned char a : 3, b : 3, c : 3, d : 3, e : 3;
-    %% 15 bits packed in char = 3 bytes
-    %% | ab | cd | e_ |
     T2 = test_bitfield_t2(),
+    3 = share:sizeof(T2),
     
-    %% unsigned char a : 3, b : 3;
-    %% unsigned int c : 3;
-    %% unsigned char d : 3, e : 3;
-    %% 15 bits packed in int = 2 bytes?
-    %% | ab | cde |
     T3 = test_bitfield_t3(),
+    S3 = share:sizeof(T3),
+    S3 = share:sizeof(int),
 
-    %% unsigned int a : 5, : 3, b : 5, : 0, c : 5, : 3, d : 5;
-    %% 23 bits packed in int = 3 bytes?
-    %% | a | b | c | d |
     T4 = test_bitfield_t4(),
+    S4 = share:sizeof(T4),
+    S4 = share:sizeof(int),
+    %%
+    T5 = test_bitfield_t5(),
+    2 = share:sizeof(T5),
+
+    T6 = test_bitfield_t6(),
+    S6 = share:sizeof(T6),
+    S6 = share:sizeof(int)+1,
     ok.
 
 
@@ -341,35 +437,31 @@ test_c_interaction() ->
 %% to a file. Read it back and decode
 %% check offsets etc.
 %%
+    
 test_c_interaction(Type) ->
-    PrivDir = code:priv_dir(share),
-    TypeFmt = format_ctype(Type),
-    SizeFmt = format_ctype_sizes(Type),
     Data = gen_data(Type),
-    DataFmt = format_data(Type,Data),
-    Code = 
-	[
-	 "#include <stdio.h>\n",
-	 "#include <stdlib.h>\n",
-	 "#include <stdint.h>\n",
-	 "#include <unistd.h>\n",
-	 "#include <complex.h>\n",
-	 [TypeFmt," x",SizeFmt," = ", DataFmt, ";\n"],
-	 "int main(int argc, char** argv)\n",
-	 "{\n",
-	 "\twrite(1, &x, sizeof(x));\n",
-	 "\texit(0);\n",
-	 "}\n"],
-    CFileName = filename:join(PrivDir, "share_dat.c"),
-    ExecName = filename:join(PrivDir, "share_dat"),
-    DatName = filename:join(PrivDir, "share.dat"),
-    ok = file:write_file(CFileName, Code),
-    io:put_chars(Code),
-    CompileResult = os:cmd(["gcc -o ",ExecName," ",CFileName]),
+    test_c_interaction(Type,Data).
+
+test_c_interaction(Type, Data) ->
+    {ok,CFilename} = generate_c_code(Type, Data),
+    Execname = filename:rootname(CFilename),
+    DatName = Execname ++ ".dat",
+    CompileResult = os:cmd(["gcc -o ",Execname," ",CFilename]),
     io:put_chars(CompileResult),
-    os:cmd([ExecName," > ", DatName]),
+    os:cmd([Execname," > ", DatName]),
     {ok,Bin} = file:read_file(DatName),
+
+    format_bits(user, Bin),
+
+    Size = share:sizeof(Type),
+    Size = byte_size(Bin),
     TypeRef = share:new_type(Type),
+
+    Obj = share:new(TypeRef),
+    share:setelement(Obj, [], Data),
+    {TypeRef,ObjBin} = share:info(Obj),
+    format_bits(user, ObjBin),
+    
     X = share:new(TypeRef, Bin),
     Data1 = share:element(X, []),
     case equal_data(Data, Data1) of
@@ -396,6 +488,60 @@ test_c_interaction(Type) ->
     %% 		       decode_result => Data1 }
     %% 	    end
     %% end.
+
+generate_c_data(Type, Data) ->
+    {ok,CFilename} = generate_c_code(Type, Data),
+    Execname = filename:rootname(CFilename),
+    CompileResult = os:cmd(["gcc -o ",Execname," ",CFilename]),
+    io:put_chars(CompileResult),
+    Res = os:cmd(Execname),
+    file:delete(CFilename),
+    file:delete(Execname),
+    format_bits(user, Res),
+    Res.
+
+generate_c_code(Type, Data) ->
+    {ok, Filename} = tmp_filename("/tmp/share", "bits_", ".c"),
+    TypeFmt = format_ctype(Type),
+    SizeFmt = format_ctype_sizes(Type),
+    DataFmt = format_data(Type,Data),
+    Code = 
+	[
+	 "#include <stdio.h>\n",
+	 "#include <stdlib.h>\n",
+	 "#include <stdint.h>\n",
+	 "#include <unistd.h>\n",
+	 "#include <complex.h>\n",
+	 "#define PACKED __attribute__((packed))\n",
+	 [TypeFmt," x",SizeFmt," = ", DataFmt, ";\n"],
+	 "int main(int argc, char** argv)\n",
+	 "{\n",
+	 "\twrite(1, &x, sizeof(x));\n",
+	 "\texit(0);\n",
+	 "}\n"],
+    ok = file:write_file(Filename, Code),
+    {ok, Filename}.
+
+tmp_filename(Dir,Prefix,Ext) ->
+    filelib:ensure_path(Dir),
+    tmp_filename_(5,Dir,Prefix,Ext).
+
+tmp_filename_(0, _Dir,_Prefix,_Ext) ->
+    {error, unable_to_create};
+tmp_filename_(I,Dir,Prefix,Ext) ->
+    Name = make_random_filename(Prefix,Ext),
+    Path = filename:join(Dir, Name),
+    case filelib:is_file(Path) of
+	false -> {ok, Path};
+	true -> tmp_filename_(I-1,Dir,Prefix,Ext)
+    end.
+
+make_random_filename(Prefix,Ext) ->
+    Rand = rand:bytes(16),
+    Time = <<(erlang:unique_integer()):64>>,
+    Hash = erlang:md5(<<Rand/binary,
+                        (list_to_binary(Prefix))/binary, Time/binary>>),
+    Prefix++binary_to_list(binary:encode_hex(Hash))++Ext.
 
 -define(EPS, 1.0e-6).
 
@@ -425,7 +571,7 @@ format_data(complex128_t, [R|I]) ->
     "CMPLX("++io_lib_format:fwrite_g(R)++","++
 	io_lib_format:fwrite_g(I)++")";
 
-format_data({IntType,Size}, Data) when 
+format_data({_IntType,Size}, Data) when 
       is_integer(Size) andalso (Size > 0) ->
     integer_to_list(Data);
 format_data(Type, Data) when is_atom(Type) ->
@@ -440,6 +586,10 @@ format_fields_data(Fs, Vs) ->
 
 format_fields_data_([], []) -> 
     [];
+format_fields_data_([pack|Fs], Vs) ->
+    format_fields_data_(Fs, Vs);
+format_fields_data_([nopack|Fs], Vs) ->
+    format_fields_data_(Fs, Vs);
 format_fields_data_([{'_',{_,FieldSize}}|Fs], Vs) when FieldSize >= 0 ->
     format_fields_data_(Fs, Vs);
 format_fields_data_([{_Name,Type}|Fs], [Val|Vs]) ->
@@ -500,9 +650,10 @@ gen_data(Type) ->
     end.
 
 gen_fields_data([]) -> [];
-gen_fields_data([{'_',_Type}|Fs]) ->
-    gen_fields_data(Fs);
-gen_fields_data([{Name,Type}|Fs]) ->
+gen_fields_data([{'_',_Type}|Fs]) ->  gen_fields_data(Fs);
+gen_fields_data([pack|Fs]) -> gen_fields_data(Fs);
+gen_fields_data([nopack|Fs]) -> gen_fields_data(Fs);
+gen_fields_data([{_Name,Type}|Fs]) ->
     [gen_data(Type) | gen_fields_data(Fs)].
 
 gen_array_data([Size], _, Type) ->
@@ -539,14 +690,24 @@ format_ctype(Type) when is_tuple(Type) ->
 	{array,0,Te} -> format_ctype(Te);
 	{array,_SizeOpt,Te} -> format_ctype(Te);
 	{struct,Fs} ->
-	    ["struct { ", 
-	     [[format_ctype(T)," ",
-	       if N =:= '_' -> "";
-		  true -> atom_to_list(N)
-	       end,
-	       format_ctype_sizes(T),";"] || 
-		 {N,T} <- Fs], " }"]
+	    Pack = case lists:member(pack,Fs) of
+		       true -> "__attribute__((packed)) ";
+		       false -> ""
+		   end,
+	    ["struct ", Pack, "{ ", 
+	     format_ctype_fields(Fs), " }"]
     end.
+
+format_ctype_fields([]) -> [];
+format_ctype_fields([pack|Fs]) -> format_ctype_fields(Fs);
+format_ctype_fields([nopack|Fs]) -> format_ctype_fields(Fs);
+format_ctype_fields([{'_',Type}|Fs]) ->
+    [[format_ctype(Type)," ", format_ctype_sizes(Type),";"] |
+     format_ctype_fields(Fs)];
+format_ctype_fields([{Name,Type}|Fs]) ->
+    [[format_ctype(Type)," ",atom_to_list(Name),format_ctype_sizes(Type),";"] | 
+     format_ctype_fields(Fs)].
+    
 
 format_ctype_def(Type) when is_atom(Type) ->
     case Type of
@@ -612,3 +773,34 @@ format_ctype_sizes({array,SizeOpt,_BaseType}) ->
 	    [["[",integer_to_list(Size),"]"] || Size <- Sizes]
     end;
 format_ctype_sizes({struct,_Fs}) -> "".
+
+format_bits(Fd, Bin) when is_binary(Bin) ->
+    format_bits(Fd, Bin, 8);
+format_bits(Fd, List) when is_list(List) ->
+    format_bits(Fd, iolist_to_binary(List), 8);
+format_bits(Fd, Int) when is_integer(Int), Int > 0 ->
+    format_bits(Fd, binary:encode_unsigned(Int), 8).
+
+format_bits(Fd, Bin, GroupSize) when is_binary(Bin) ->
+    Bits = [X || <<X:1>> <= Bin],
+    if GroupSize =:= 0 ->
+	    io:format(Fd, "|~s|\n", [[(Bit+$0)||Bit<-Bits]]);
+       true ->
+	    io:format(Fd, "|", []),
+	    Len = length(Bits),
+	    format_groups_(Fd, Bits, Len, GroupSize),
+	    io:format(Fd, "\n", [])
+    end.
+
+format_groups_(_Fd, [], 0, _GroupSize) ->
+    ok;
+format_groups_(Fd, Bits, Len, GroupSize) ->
+    if Len < GroupSize ->
+	    io:format(Fd, "~s|", [[(B+$0)||B <- Bits]]);
+       true ->
+	    case lists:split(GroupSize, Bits) of
+		{Bits1, Bits2} ->
+		    io:format(Fd, "~s|", [[(B+$0)||B<-Bits1]]),
+		    format_groups_(Fd, Bits2, Len - GroupSize, GroupSize)
+	    end
+    end.

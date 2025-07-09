@@ -45,14 +45,13 @@
 -type cmplx()  :: complex|complex64_t|complex128_t.
 -type int()    :: uint() | sint().
 -type num()    :: int() | flt() | cmplx().
--type atm()    :: atom().
 -type array()  :: {array,unsigned(),typespec()}.
 -type bin()    :: {array,unsigned(),uint8}.
 -type str()    :: {array,unsigned(),int8}.
--type struct() :: {struct,[{FieldName::atm(),FieldType::ftypespec()}]}.
--type typespec()  :: num()|atm()|array()|struct()|str()|bin()|typeref().
--type ftypespec() :: typespec()|{unsigned,unsigned()}|{signed,unsigned()}.
-
+-type struct() :: {struct,[field()]}.
+-type typespec()  :: num()|atom()|array()|struct()|str()|bin()|typeref().
+-type ftypespec() :: typespec()|{uint(),unsigned()}|{sint(),unsigned()}.
+-type field() :: pack|nopack|{FieldName::atom(),FieldType::ftypespec()}.
 -type path() :: [unsigned()|atom()|{unsigned()}|{unsigned(),unsigned()}].
 -type type() :: typeref()|objref()|typespec().
 

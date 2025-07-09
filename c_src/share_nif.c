@@ -14,6 +14,7 @@
 #include "bitpack.h"
 
 // #define NIF_TRACE
+#define DEBUG
 
 // Dirty optional since 2.7 and mandatory since 2.12
 #if (ERL_NIF_MAJOR_VERSION > 2) || ((ERL_NIF_MAJOR_VERSION == 2) && (ERL_NIF_MINOR_VERSION >= 7))
@@ -142,7 +143,6 @@ DECL_ATOM(float128_t);
 DECL_ATOM(complex64_t);
 DECL_ATOM(complex128_t);
 
-DECL_ATOM(atm);
 // structured types
 DECL_ATOM(array);
 DECL_ATOM(struct);
@@ -154,8 +154,10 @@ DECL_ATOM(stride);
 DECL_ATOM(alignment);
 DECL_ATOM(offset);
 
-// emapty field name (:0 or :3 ..)
+// empty field name (:0 or :3 ..)
 DECL_ATOM(_);
+DECL_ATOM(pack);
+DECL_ATOM(nopack);
 
 
 #define PATH_FLAG_NONE    0x00
@@ -245,7 +247,6 @@ static struct { ERL_NIF_TERM* atmp; share_type_t type; } typedef_pair[] =
     { &ATOM(float128_t), SHT_FLOAT128 },
     { &ATOM(complex64_t), SHT_COMPLEX64 },
     { &ATOM(complex128_t), SHT_COMPLEX128 },
-    { &ATOM(atm), SHT_ATM },
     { NULL, 0 }
 };
 
@@ -560,6 +561,30 @@ static size_t sht_bitsizeof(share_type_t* tptr)
     }
 }
 
+// assume alignment is a power of 2
+static size_t sht_alignment_pad(share_type_t e_size, share_type_t alignment)
+{
+    size_t n;
+    if ((n = (e_size & (alignment-1))) == 0)
+	return 0;
+    return alignment - n;
+}
+
+static size_t sht_aligned_size(share_type_t e_size, share_type_t alignment)
+{
+    return e_size + sht_alignment_pad(e_size, alignment);
+}
+
+static size_t sht_sizeof_struct(sht_struct_t* tptr)
+{
+    return sht_aligned_size(tptr->e_size, tptr->alignment);
+}
+
+static size_t sht_sizeof_union(sht_union_t* tptr)
+{
+    return sht_aligned_size(tptr->e_size, tptr->alignment);
+}
+
 static size_t sht_sizeof(share_type_t* tptr)
 {
     switch(sht_type(*tptr)) {
@@ -571,9 +596,9 @@ static size_t sht_sizeof(share_type_t* tptr)
 	    return sp->e_size;
     }
     case SHT_STRUCT:
-	return ((sht_struct_t*) tptr)->e_size;
+	return sht_sizeof_struct((sht_struct_t*) tptr);
     case SHT_UNION:
-	return ((sht_union_t*) tptr)->e_size;	
+	return sht_sizeof_union((sht_union_t*) tptr);
     case SHT_ATM:
 	return sizeof(share_type_t);
     case SHT_SIGNED:
@@ -683,8 +708,6 @@ static ERL_NIF_TERM sht_typeof(ErlNifEnv* env, share_type_t* tptr)
 	}
 	return enif_make_tuple2(env, ATOM(union), list);
     }
-    case SHT_ATM:
-	return ATOM(atm);
     case SHT_FLT:
 	switch(sht_bitsize(*tptr)) {
 	case 16: return ATOM(float16_t);
@@ -926,33 +949,33 @@ static ERL_NIF_TERM make_int128(ErlNifEnv* env, void* ptr)
 #define VALUE_MASK(size) ((1 << (size)) - 1)
 
 #ifdef LITTLE_ENDIAN
-#define EXTRACT_VALUE(ptr,var,offset,size) do {			\
-	DBGF("extract_LE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
-	(var) <<= (8*sizeof(val)-(size)-(offset));			\
-	(var) >>= (8*sizeof(val)-(size));				\
+#define EXTRACT_VALUE(var,offset,size) do {			\
+	DBGF("extract_LE: boffset=%d,size=%d/%d,val'=%d,",(offset),(size),sizeof((var))*8,(var)); \
+	(var) <<= (8*sizeof(var)-(size)-(offset));			\
+	(var) >>= (8*sizeof(var)-(size));				\
 	DBGF("val=%d\r\n", (var));					\
     } while(0)
 #else
-#define EXRACT_VALUE(ptr,var,offset,size) do {				\
-	DBGF("extract_BE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
+#define EXRACT_VALUE(var,offset,size) do {				\
+	DBGF("extract_BE: boffset=%d,size=%d/%d,val'=%d,",(offset),(size),sizeof((var))*8,(var)); \
 	(var) <<= (offset);						\
-	(var) >>= (8*sizeof(val)-(size));				\
+	(var) >>= (8*sizeof(var)-(size));				\
 	DBGF("val=%d\r\n", (var));					\
     } while(0)
 #endif
 
 #ifdef LITTLE_ENDIAN
-#define INJECT_VALUE(ptr,var,offset,size,fld) do {			\
-	DBGF("inject_LE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
-	(var) = (((fld) & VALUE_MASK(size)) << (offset)) |		\
-	    ((var) & ~(VALUE_MASK(size) << (offset)));			\
+#define INJECT_VALUE(var,offs,n,fld) do {			\
+	DBGF("inject_LE: offs=%d,n=%d/%d,val'=%d,",(offs),(n),sizeof((var))*8,(var)); \
+	(var) = (((fld) & VALUE_MASK(n)) << (offs)) |		\
+	    ((var) & ~(VALUE_MASK(n) << (offs)));			\
 	DBGF("val=%d\r\n", (var));				\
     } while(0)
 #else
-#define INJECT_VALUE(ptr,var,offset,size,fld) do { 			\
-	DBGF("inject_BE: ptr=%p,offset=%d,size=%d/%d,val'=%d,",(ptr),(offset),(size),sizeof((var))*8,(var)); \
-	(var) = (((fld) & VALUE_MASK(size)) << (8*sizeof(val)-(size)-(offset))) | \
-	    ((var) & ~(VALUE_MASK(size) << (8*sizeof(val)-(size)-(offset)))); \
+#define INJECT_VALUE(var,offs,n,fld) do { 			\
+	DBGF("inject_BE: boffset=%d,size=%d/%d,val'=%d,",(offs),(n),sizeof((var))*8,(var)); \
+	(var) = (((fld) & VALUE_MASK(n)) << (8*sizeof(val)-(n)-(offs))) | \
+	    ((var) & ~(VALUE_MASK(n) << (8*sizeof(val)-(n)-(offs))));	\
 	DBGF("val=%d\r\n", (var));					\
     } while(0)
 #endif
@@ -970,22 +993,22 @@ static ERL_NIF_TERM get_bit_value(ErlNifEnv* env, share_type_t* type,
 	switch (size) {
 	case 8: {
 	    uint8_t val = *((uint8_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_ulong(env, val);
 	}
 	case 16: {
 	    uint16_t val = *((uint16_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_ulong(env, val);
 	}
 	case 32: {
 	    uint32_t val = *((uint32_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_ulong(env, val);
 	}
 	case 64: {
 	    uint64_t val = *((uint64_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_uint64(env, val);
 	}
 	default:
@@ -996,22 +1019,22 @@ static ERL_NIF_TERM get_bit_value(ErlNifEnv* env, share_type_t* type,
 	switch (size) {
 	case 8: {
 	    int8_t val = *((int8_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_long(env, val);
 	}
 	case 16: {
 	    int16_t val = *((int16_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_long(env, val);
 	}
 	case 32: {
 	    int32_t val = *((int32_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_long(env, val);
 	}
 	case 64: {
 	    int64_t val = *((int64_t*) ptr);
-	    EXTRACT_VALUE(ptr,val,offset,fsize);
+	    EXTRACT_VALUE(val,offset,fsize);
 	    return enif_make_int64(env, val);
 	}
 	default:
@@ -1338,23 +1361,60 @@ static size_t inline align_offset(size_t offset, size_t align)
     return (offset + align - 1) & ~(align - 1);
 }
 
-static void update_offset(sht_struct_t* sp, int j,
-			  int offset, int new_offset)
+#ifdef DEBUG
+void print_field(int i, sht_field_t* fp, share_type_t* tptr)
 {
-    while(j >= 0) {
+    int bit_size = sht_bitfieldsize(*tptr);
+    int base_size = sht_bitsize(*tptr);
+    int base_alignment = sht_align(tptr);
+    DEBUGF("field[%d] e_offset=%d,b_offset=%d,size=%d/%d,align=%d",
+	   i, fp->e_offset, fp->b_offset,
+	   bit_size, base_size, base_alignment);
+}
+#endif
+
+//
+// update all previous fields that fit with a new offset
+//
+static int update_offset(sht_struct_t* sp, int j,
+			 size_t remain, int new_offset,
+			 int* bit_position_ret)
+{
+    int j0 = j;
+    int offset0 = new_offset;
+    int bit_position = 0;
+    
+    while((j >= 0) && (remain > 0)) {
 	sht_field_t* fp = &sp->spec[j];
 	share_type_t* tptr = fp->spec + fp->t_offset;
-	DEBUGF("backpatch: field[%d] offset=%d offset'=%d",
-	       j, offset, new_offset);
+#ifdef DEBUG	
+	DBGF("backpatch:", ""); print_field(j, fp, tptr);
+#endif
 	if (sht_is_bitfield(*tptr) &&
-	    (fp->e_offset == offset)) {
-	    DEBUGF("  set offset=%d", new_offset);
+	    (sht_bitfieldsize(*tptr) <= remain)) {
+	    offset0 = fp->e_offset;
 	    fp->e_offset = new_offset;
+	    remain -= sht_bitfieldsize(*tptr);
+	    DEBUGF("  set offset=%d, remain=%ld", new_offset, remain);
 	}
 	else
-	    return;
+	    break;
 	j--;
     }
+    j++;
+    while(j <= j0) {
+	sht_field_t* fp = &sp->spec[j];
+	share_type_t* tptr = fp->spec + fp->t_offset;
+	fp->e_offset = offset0;
+	fp->b_offset = bit_position;
+#ifdef DEBUG	
+	DBGF("  forward", ""); print_field(j, fp, tptr);
+#endif
+	bit_position += sht_bitfieldsize(*tptr);
+	j++;
+    }
+    *bit_position_ret = bit_position;
+    return offset0;
 }
 
 static void update_bitsize(sht_struct_t* sp, int j,
@@ -1365,10 +1425,11 @@ static void update_bitsize(sht_struct_t* sp, int j,
 	share_type_t* tptr = fp->spec + fp->t_offset;
 	if (sht_is_bitfield(*tptr) && (fp->e_offset == offset)) {
 	    share_type_t type;
-	    DEBUGF("backpatch: field[%d] bitsize=%d, bitsize'=%d",
-		   j, offset, sht_bitfieldsize(*tptr), bit_size);
 	    type = *tptr;
 	    *tptr = sht_set_bitsize(type,bit_size);
+#ifdef DEBUG	    
+	    DBGF("bitpatch:",""); print_field(j, fp, tptr);
+#endif
 	}
 	else
 	    return;
@@ -1377,6 +1438,27 @@ static void update_bitsize(sht_struct_t* sp, int j,
 }
 
 // https://www.gnu.org/software/c-intro-and-ref/manual/html_node/Bit-Field-Packing.html
+
+// calcualte number of fields in a struct, skip some attributs
+// and check for proper list
+static int number_of_fields(ErlNifEnv* env,ERL_NIF_TERM list,unsigned int* lenp)
+{
+    unsigned int len = 0;
+    ERL_NIF_TERM hd, tl;
+    
+    while(enif_get_list_cell(env, list, &hd, &tl)) {
+	const ERL_NIF_TERM* elem;
+	int arity;
+	if (enif_get_tuple(env, hd, &arity, &elem) && (arity == 2))
+	    len++;
+	list = tl;
+    }
+    if (!enif_is_empty_list(env, list)) 
+	return 0;
+    *lenp = len;
+    return 1;
+}
+
 
 static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 {
@@ -1396,8 +1478,9 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
     size_t max_align = 0;  // max alignment of struct fields
     size_t t_size;
     unsigned int cur0;     // start position
-    
-    if (!enif_get_list_length(env, list, &len))
+    int pack = 0;
+
+    if (!number_of_fields(env, list, &len))
 	return 0;
     t_size = sizeof(sht_struct_t)+len*sizeof(sht_field_t);
     if ((sp = dyn_build(dp, t_size)) == 0)
@@ -1413,9 +1496,20 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 	share_type_t* tptr;
 	int farity;
 	int fcur;
-		
-	if (!enif_get_tuple(env, hd, &farity, &felem) || (farity!=2))
+
+	if (hd == ATOM(pack)) {
+	    pack = 1;
+	    list = tl;
+	    continue;
+	}
+	else if (hd == ATOM(nopack)) {
+	    pack = 0;
+	    list = tl;
+	    continue;
+	}
+	else if (!enif_get_tuple(env, hd, &farity, &felem) || (farity!=2))
 	    return 0;
+	// {Name::atom(), Type::type()}
 	if (!enif_is_atom(env, felem[0]))
 	    return 0;
 
@@ -1428,20 +1522,28 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 	if ((base_size = sht_sizeof(tptr)) == 0)
 	    return 0;
 	base_alignment = sht_align(tptr);
+	if (pack)
+	    base_alignment = 1;
 	if (base_alignment > max_align)
 	    max_align = base_alignment;
 	base_type = *tptr;
 
-	DEBUGF("field[%d] offset=%d,size=%d,align=%d,type=%d",
-	       i, offset, base_size, base_alignment, sht_bitsize(base_type));
-	
-	if (sht_is_bitfield(*tptr)) {
-	    int bit_size = sht_bitfieldsize(*tptr);
-
-	    DEBUGF("  bitsize=%d,usize=%d,ualign=%d,utype=%d",
-		   bit_size, storage_unit_size, storage_unit_alignment,
-		   sht_bitsize(storage_unit_base_type));
-
+	if (sht_is_bitfield(*tptr) || (pack && sht_is_integer(*tptr))) {
+	    int bit_size;
+	    if (sht_is_bitfield(*tptr))
+		bit_size = sht_bitfieldsize(*tptr);
+	    else {
+		share_type_t type = *tptr;
+		bit_size = base_size*8;
+		// convert to bitfield
+		type = sht_set_bitfield(type);
+		*tptr = sht_set_bitfieldsize(type, bit_size);
+	    }
+	    DEBUGF("B%d:  offset = %d/%d, size = %d/%d align=%d",
+		   i, offset, bit_position,
+		   base_size*8, bit_size,
+		   base_alignment);
+	    
 	    if (storage_unit_base_type == 0) {
 		offset = align_offset(offset, base_alignment);
 		storage_unit_offset = offset;
@@ -1452,50 +1554,75 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 	    }
 	    else {
 		if (base_size > storage_unit_size) {
-		    int new_alignment = base_alignment;
-		    if (new_alignment > storage_unit_alignment) {
-			int new_offset = align_offset(storage_unit_offset,
-						      new_alignment);
-			if (new_offset != storage_unit_offset) {
-			    update_offset(sp, i-1, storage_unit_offset,
-					  new_offset);
-			    storage_unit_offset = new_offset;
-			    offset = new_offset;
-			}
-			storage_unit_alignment = new_alignment;
+		    if (pack) {
+			offset += storage_unit_size;  // no alignment
+			storage_unit_offset = offset;
+			storage_unit_size = base_size;
+			storage_unit_alignment = base_alignment;
+			storage_unit_base_type = base_type;
+			bit_position = 0;
 		    }
-		    storage_unit_size = base_size;
-		    storage_unit_base_type = base_type;
-		    update_bitsize(sp, i-1, storage_unit_offset,
-				   storage_unit_size*8);
+		    else {
+			int new_alignment = base_alignment;
+			if (new_alignment > storage_unit_alignment) {
+			    int new_offset = align_offset(storage_unit_offset,
+							  new_alignment);
+			    if (new_offset != storage_unit_offset) {
+				new_offset = update_offset(sp, i-1,
+							   base_size - bit_size,
+							   new_offset,
+							   &bit_position);
+				storage_unit_offset = new_offset;
+				offset = new_offset;
+			    }
+			    storage_unit_alignment = new_alignment;
+			}
+			storage_unit_size = base_size;
+			storage_unit_base_type = base_type;
+			update_bitsize(sp, i-1, storage_unit_offset,
+				       storage_unit_size*8);
+		    }
 		}
 	    }
-	    if (bit_position + bit_size > storage_unit_size*8) {
-		if (base_size > storage_unit_size)
-		    ;
-		else {
-		    offset = storage_unit_offset + storage_unit_size;
-		    offset = align_offset(offset, base_alignment);
-		    storage_unit_offset = offset;
-		    storage_unit_size = base_size;
-		    storage_unit_alignment = base_alignment;
-		    storage_unit_base_type = base_type;
-		    bit_position = 0;
-		}
+	    if (bit_size == 0) {
+		// zero size bitfield - align to storage type
+		offset = align_offset(offset, base_alignment);
+		storage_unit_offset = offset;
+		storage_unit_size = base_size;
+		storage_unit_alignment = base_alignment;
+		storage_unit_base_type = base_type;
+		bit_position = 0;
+		list = tl;
+		continue;
 	    }
-	    fp->e_offset = storage_unit_offset;
-	    fp->b_offset = bit_position;
-	    *tptr = sht_set_bitsize(*tptr,storage_unit_size*8);
-
-	    bit_position += bit_size;
-	    // if (bit_position == storage_unit_size*8) {
-	    // offset = storage_unit_offset + storage_unit_size;
-	    // storage_unit_base_type = 0;
-	    // }
+	    else {
+		if (bit_position + bit_size > storage_unit_size*8) {
+		    if (base_size > storage_unit_size)
+			;
+		    else {
+			offset = storage_unit_offset + storage_unit_size;
+			offset = align_offset(offset, base_alignment);
+			storage_unit_offset = offset;
+			storage_unit_size = base_size;
+			storage_unit_alignment = base_alignment;
+			storage_unit_base_type = base_type;
+			bit_position = 0;
+		    }
+		}
+		fp->e_offset = storage_unit_offset;
+		fp->b_offset = bit_position;
+		*tptr = sht_set_bitsize(*tptr,storage_unit_size*8);
+		bit_position += bit_size;
+	    }
 	}
-	else {  // regular field 
+	else {  // regular field
+	    DEBUGF("R%d:  offset = %d/%d, size = %d align=%d",
+		   i, offset, bit_position,
+		   base_size,
+		   base_alignment);	    
+
 	    if (storage_unit_base_type != 0) {
-		offset = storage_unit_offset + storage_unit_size;
+		// offset = storage_unit_offset + storage_unit_size;
 		storage_unit_base_type = 0;
 		bit_position = 0;
 	    }
@@ -1506,16 +1633,23 @@ static int build_struct_type(ErlNifEnv* env, ERL_NIF_TERM list,dyn_build_t* dp)
 
 	    offset += base_size;
 	}
-	i++;
+#ifdef DEBUG	
+	print_field(i, fp, tptr);
+#endif
+	DEBUGF("%d:  offset=%d, bit_position=%d", i, offset, bit_position);
+
 	list = tl;
+	i++;
     }
     
     sp->t_size = dp->cur - cur0;
-    if (storage_unit_base_type != 0)
+    // if packing then just use the bytes used, no need to add padding
+    if (!pack && (storage_unit_base_type != 0)) {
 	offset = storage_unit_offset + storage_unit_size;
+    }
     sp->e_size = offset;
     sp->alignment = max_align;
-    return 1;    
+    return 1;
 }
 
 
@@ -1665,7 +1799,7 @@ static int build_array_type(ErlNifEnv* env,
 
 static int build_type(ErlNifEnv* env, ERL_NIF_TERM arg, dyn_build_t* dp)
 {
-    if (enif_is_atom(env, arg)||enif_is_list(env, arg)) {
+    if (enif_is_atom(env, arg) || enif_is_list(env, arg)) {
 	share_type_t type;
 	if (!build_type0(env, arg, &type))
 	    return 0;
@@ -2032,38 +2166,36 @@ static int set_bit_value(ErlNifEnv* env, share_type_t* tptr, uint8_t* ptr,
     uint64_t u64;
     size_t fsize;
     size_t size;
-    
+
     if (!enif_get_uint64(env, value, &u64)) {
 	if (!enif_get_int64(env, value, (int64_t*) &u64))
 	    return 0;
-    }    
+    }
     fsize = sht_bitfieldsize(*tptr);
     size = sht_bitsize(*tptr);
-    DBGF("set_bit_value: ptr=%p,offset=%d,size=%d,fsize=%d\r\n",
-	 ptr, offset, size, fsize);
     
     switch (size) {
     case 8: {
 	uint8_t val = *ptr;
-	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	INJECT_VALUE(val,offset,fsize,u64);
 	*((uint8_t*)ptr) = val;
 	break;
     }
     case 16: {
 	uint16_t val = *(uint16_t*) ptr;
-	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	INJECT_VALUE(val,offset,fsize,u64);
 	*((uint16_t*)ptr) = val;
 	break;
     }
     case 32: {
 	uint32_t val = *(uint32_t*) ptr;
-	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	INJECT_VALUE(val,offset,fsize,u64);
 	*((uint32_t*)ptr) = val;
 	break;
     }
     case 64: {
 	uint64_t val = *(uint64_t*) ptr;
-	INJECT_VALUE(ptr,val,offset,fsize,u64);
+	INJECT_VALUE(val,offset,fsize,u64);
 	*((uint64_t*)ptr) = val;
 	break;
     }
@@ -2188,7 +2320,6 @@ static ERL_NIF_TERM share_setelement(ErlNifEnv* env, int argc, const ERL_NIF_TER
 
     tptr = obj->type;
     ptr = obj->data;
-    DEBUGF("setelement ptr=%x\r\n", ptr);
     
     if (!get_path(env, argv[1], PATH_FLAG_RESIZE, tptr, &tptr, ptr, &ptr, &fp))
 	return enif_make_badarg(env);
@@ -2853,7 +2984,6 @@ static int load_atoms(ErlNifEnv* env)
     LOAD_ATOM(complex);    
     LOAD_ATOM(complex64_t);
     LOAD_ATOM(complex128_t);
-    LOAD_ATOM(atm);
     
     // structured types
     LOAD_ATOM(array);
@@ -2868,6 +2998,8 @@ static int load_atoms(ErlNifEnv* env)
     LOAD_ATOM(offset);
 
     LOAD_ATOM(_);
+    LOAD_ATOM(pack);
+    LOAD_ATOM(nopack);
     
     return 0;
 }
